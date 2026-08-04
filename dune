@@ -1,0 +1,3 @@
+; Dot-directories are excluded from the build by default; opt .archived back
+; in so the old M0 mock stays buildable (dune exec .archived/bin/main.exe).
+(dirs :standard .archived)

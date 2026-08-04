@@ -1,0 +1,7 @@
+(include_subdirs qualified)
+
+(library
+ (name gitter)
+ (libraries async bonsai bonsai_term bonsai_term_components.border_box core)
+ (preprocess
+  (pps ppx_jane bonsai.ppx_bonsai)))

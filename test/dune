@@ -1,0 +1,5 @@
+(tests
+ (names test_solver test_git)
+ (libraries core gitter)
+ (preprocess
+  (pps ppx_jane)))

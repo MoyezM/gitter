@@ -1,0 +1,6 @@
+(executable
+ (name main)
+ (libraries async bonsai bonsai_term bonsai_term_components.tmux core
+   core_unix.command_unix pending_or_error)
+ (preprocess
+  (pps ppx_jane bonsai.ppx_bonsai)))

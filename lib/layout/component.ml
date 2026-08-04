@@ -16,7 +16,7 @@ module Tree = struct
   type t =
     | Leaf of
         { id : string
-        ; title : string
+        ; title : string Bonsai.t (* dynamic: e.g. the selected file's path *)
         ; component : Widget.t
         }
     | Split of
@@ -121,7 +121,7 @@ let component (tree : Tree.t) ~model ~inject : Widget.t =
   let leaf_views =
     all
       (List.map instantiated ~f:(fun (id, title, view, _) ->
-         let%arr view in
+         let%arr view and title in
          id, title, view))
   in
   let leaf_handlers =

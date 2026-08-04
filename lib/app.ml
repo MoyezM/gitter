@@ -13,22 +13,26 @@ open Bonsai.Let_syntax
    Layout's state is created here so its control handle can feed the menu's
    command tree — the pattern every layer with commands will follow. *)
 
-let layout_tree =
+let layout_tree ~(data : Git_data.t) =
+  let diff_title =
+    let%arr selection = data.selection in
+    Option.value selection ~default:"Diff"
+  in
   Layout.Component.Tree.(
     split
       `Row
-      [ 1., leaf ~id:"files" ~title:"Files" (Placeholder.component ~name:"files")
+      [ ( 1.
+        , leaf ~id:"files" ~title:(Bonsai.return "Files") (Leaves.Files.component ~data) )
       ; ( 2.
-        , split
-            `Col
-            [ 2., leaf ~id:"diff" ~title:"Diff" (Placeholder.component ~name:"diff")
-            ; 1., leaf ~id:"log" ~title:"Log" (Placeholder.component ~name:"log")
-            ] )
+        , leaf
+            ~id:"diff"
+            ~title:diff_title
+            (Leaves.Diff.component ~selection:data.selection) )
       ])
 ;;
 
-let commands ~(layout : Layout.Component.Controls.t Bonsai.t) =
-  let%arr layout in
+let commands ~(layout : Layout.Component.Controls.t Bonsai.t) ~refresh =
+  let%arr layout and refresh in
   [ Menu.Commands.Group
       { key = 'w'
       ; label = "window"
@@ -36,6 +40,11 @@ let commands ~(layout : Layout.Component.Controls.t Bonsai.t) =
           [ Action { key = 'z'; label = "zoom"; effect = layout.toggle_zoom }
           ; Action { key = 'n'; label = "next pane"; effect = layout.focus_next }
           ]
+      }
+  ; Menu.Commands.Group
+      { key = 'g'
+      ; label = "git"
+      ; children = [ Action { key = 'r'; label = "reload status"; effect = refresh } ]
       }
   ]
 ;;
@@ -49,13 +58,19 @@ let app ~(dimensions : Dimensions.t Bonsai.t) (local_ graph)
     ; width = dimensions.width
     }
   in
+  let data = Git_data.create graph in
+  let layout_tree = layout_tree ~data in
   let layout_model, layout_inject = Layout.Component.state layout_tree graph in
   let controls = Layout.Component.controls ~inject:layout_inject in
   let screen =
     Mode.component
       (Layout.Component.component layout_tree ~model:layout_model ~inject:layout_inject)
   in
-  let with_menu = Menu.Component.component ~commands:(commands ~layout:controls) screen in
+  let with_menu =
+    Menu.Component.component
+      ~commands:(commands ~layout:controls ~refresh:data.refresh)
+      screen
+  in
   let ~view:screen_view, ~handler = with_menu ~dimensions:screen_dimensions graph in
   let view =
     let%arr screen_view and dimensions in

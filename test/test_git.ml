@@ -97,6 +97,19 @@ let () =
        ; Added "let z = 4 in"
        ; Context "x + y"
        ]);
+  check "hunk starts parsed" (h1.old_start = 10 && h1.new_start = 10);
+  check
+    "numbering threads through mixed lines"
+    (List.equal
+       (fun (o1, n1, l1) (o2, n2, l2) ->
+         [%equal: int option] o1 o2 && [%equal: int option] n1 n2 && Diff.Line.equal l1 l2)
+       (Diff.Hunk.numbered h1)
+       [ Some 10, Some 10, Context "let x = 1 in"
+       ; Some 11, None, Removed "let y = 2 in"
+       ; None, Some 11, Added "let y = 3 in"
+       ; None, Some 12, Added "let z = 4 in"
+       ; Some 12, Some 13, Context "x + y"
+       ]);
   let readme = List.last_exn files in
   check "second file path" (String.equal readme.path "README.md");
   check

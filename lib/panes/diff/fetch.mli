@@ -10,23 +10,30 @@ open! Bonsai_term
 
 type payload =
   { document : Document.t
+  ; files : Git.Diff.File.t list
+      (** the parsed diff, kept for hunk staging (verbatim hunk bytes) *)
   ; binary_only : bool
       (** the diff had files but no textual hunks (binary or mode-only) *)
   ; old_hl : Highlight.t (** HEAD-side session; [Highlight.empty] in phase one *)
   ; new_hl : Highlight.t (** worktree-side session; [Highlight.empty] in phase one *)
   }
 
-(** The stored result, tagged with the path it was fetched for. Consumers
+(** What to fetch: the file plus WHICH change of it, VSCode-style — the
+    Changes pane shows worktree vs index (relative to what's staged), the
+    Staged pane shows index vs HEAD. *)
+type key = string * [ `Staged | `Unstaged ]
+
+(** The stored result, tagged with the key it was fetched for. Consumers
     must check the tag against the current selection ([Render.content]
     does). *)
-type result = (string * payload Or_error.t) option
+type result = (key * payload Or_error.t) option
 
 type t
 
 val create : unit -> t
 
-(** Start the load for [path], writing phases through [set]. *)
-val load : t -> path:string -> set:(result -> unit Effect.t) -> unit Effect.t
+(** Start the load for [key], writing phases through [set]. *)
+val load : t -> key:key -> set:(result -> unit Effect.t) -> unit Effect.t
 
 (** Selection cleared: invalidate any in-flight fetch and store None. *)
 val clear : t -> set:(result -> unit Effect.t) -> unit Effect.t

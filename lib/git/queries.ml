@@ -13,9 +13,12 @@ let status () =
   Status.parse output
 ;;
 
-(* The file's content at HEAD — the old side of an uncommitted diff, used
-   for old-side syntax highlighting. *)
+(* The file's content at HEAD — the base of a staged diff. *)
 let file_at_head path = Runner.git [ "show"; "HEAD:" ^ path ]
+
+(* The file's content in the INDEX (stage 0) — the base of an unstaged
+   diff, and the result side of a staged one. *)
+let file_in_index path = Runner.git [ "show"; ":0:" ^ path ]
 
 (* The file's combined (staged + unstaged) change vs HEAD — what "what did I
    change" means in the uncommitted view. Untracked files have no diff vs
@@ -28,24 +31,18 @@ let parse_off_thread output =
   Ok files
 ;;
 
-(* Paths after [--] are PATHSPECS: glob chars in a filename (pages/[id].tsx)
-   would match OTHER files. The literal magic makes them plain filenames. *)
-let literal path = ":(literal)" ^ path
-
-let diff_file_vs_head path =
-  match%bind.Deferred.Or_error
-    Runner.git [ "diff"; "--no-color"; "HEAD"; "--"; literal path ]
-  with
+(* The UNSTAGED change: worktree vs index. Untracked files have no index
+   entry (plain diff shows nothing for them), so fall back to a /dev/null
+   whole-file-added diff — ls-files distinguishes them from files that are
+   merely unchanged. *)
+let diff_unstaged path =
+  match%bind.Deferred.Or_error Runner.git [ "diff"; "--no-color"; "--"; Runner.literal path ] with
   | "" ->
-    (* Empty output is ambiguous: a tracked file with no changes (e.g. its
-       edit was reverted since the status load), an untracked file (diff
-       HEAD ignores those), or an untracked directory entry. Only the
-       untracked FILE should take the /dev/null whole-file-added fallback. *)
     (match%bind.Deferred Sys.is_directory path with
      | `Yes -> Deferred.Or_error.return []
      | `No | `Unknown ->
        (match%bind.Deferred
-          Runner.git [ "ls-files"; "--error-unmatch"; "--"; literal path ]
+          Runner.git [ "ls-files"; "--error-unmatch"; "--"; Runner.literal path ]
         with
         | Ok _ -> Deferred.Or_error.return [] (* tracked, genuinely unchanged *)
         | Error _ ->
@@ -56,4 +53,12 @@ let diff_file_vs_head path =
           in
           parse_off_thread output))
   | output -> parse_off_thread output
+;;
+
+(* The STAGED change: index vs HEAD. *)
+let diff_staged path =
+  let%bind.Deferred.Or_error output =
+    Runner.git [ "diff"; "--no-color"; "--cached"; "--"; Runner.literal path ]
+  in
+  parse_off_thread output
 ;;

@@ -17,6 +17,10 @@ module Hunk = struct
     ; old_start : int (* first line number on the pre-image side *)
     ; new_start : int (* first line number on the post-image side *)
     ; lines : Line.t list
+    ; raw : string
+      (* the hunk verbatim (header + body incl. "\ No newline" markers) —
+         reconstructing from [lines] would corrupt patches, so staging
+         builds its [git apply --cached] input from this *)
     }
 
   (* Each line paired with its (old, new) line numbers; the side a line
@@ -91,7 +95,12 @@ let split_runs ~marker lines =
 
 let hunk_of_run (header, body) =
   let old_start, new_start = hunk_starts header in
-  { Hunk.header; old_start; new_start; lines = List.filter_map body ~f:body_line }
+  { Hunk.header
+  ; old_start
+  ; new_start
+  ; lines = List.filter_map body ~f:body_line
+  ; raw = String.concat ~sep:"\n" (header :: body) ^ "\n"
+  }
 ;;
 
 let file_of_run (header, rest) =

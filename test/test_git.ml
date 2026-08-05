@@ -53,6 +53,26 @@ let () =
   check "path with space survives" (String.equal (find "docs/with space.md").path "docs/with space.md")
 ;;
 
+(* Hunk.raw must be the VERBATIM bytes — staging reconstructs `git apply`
+   patches from it, so it round-trips exactly, including the no-newline
+   marker the parsed lines drop. *)
+let () =
+  let hunk_text = "@@ -1,2 +1,2 @@\n context\n-old\n+new\n\\ No newline at end of file" in
+  let sample =
+    String.concat_lines [ "diff --git a/x.ml b/x.ml"; "--- a/x.ml"; "+++ b/x.ml" ]
+    ^ hunk_text
+    ^ "\n"
+  in
+  match Diff.parse sample with
+  | [ { hunks = [ h ]; _ } ] ->
+    check "raw round-trips verbatim" (String.equal h.raw (hunk_text ^ "\n"));
+    check "no-newline marker not parsed as a line" (List.length h.lines = 3);
+    check
+      "patch embeds raw byte-exactly"
+      (String.is_suffix (Gitter.Git.Stage.patch ~path:"x.ml" ~raw:h.raw) ~suffix:h.raw)
+  | _ -> check "raw sample parses" false
+;;
+
 (* C-quoted path decoding: named control escapes, octal, and totality on
    malformed input (git never emits it, but the parser must not raise). *)
 let () =

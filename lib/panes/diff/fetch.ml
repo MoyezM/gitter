@@ -3,35 +3,47 @@ open! Bonsai_term
 
 type payload =
   { document : Document.t
+  ; files : Git.Diff.File.t list (* kept for hunk staging: raw hunk bytes *)
   ; binary_only : bool
   ; old_hl : Highlight.t
   ; new_hl : Highlight.t
   }
 
-type result = (string * payload Or_error.t) option
+type key = string * [ `Staged | `Unstaged ]
+type result = (key * payload Or_error.t) option
 
 type t = { generation : int ref }
 
 let create () = { generation = ref 0 }
 
 (* Phase one of a fetch: the diff and both blob contents — no highlighting.
-   The three reads are independent; start them all before binding
-   (benchmarked at ~20-40ms each — serializing them tripled the latency
-   floor of every fetch). *)
-let fetch_text path =
+   The sides differ per section, VSCode-style: the Changes pane diffs the
+   worktree against the INDEX (relative to what's staged), the Staged pane
+   diffs the index against HEAD. The three reads are independent; start
+   them all before binding (benchmarked at ~20-40ms each — serializing
+   them tripled the latency floor of every fetch). *)
+let fetch_text ((path, side) : key) =
   let open Async in
-  let diff = Git.Queries.diff_file_vs_head path in
-  let old_content =
-    Git.Queries.file_at_head path
+  let or_empty d =
+    d
     >>| function
     | Ok c -> c
-    | Error _ -> "" (* new/untracked file: no old side *)
+    | Error (_ : Error.t) -> "" (* that side doesn't exist for this file *)
   in
-  let new_content =
+  let worktree =
     Monitor.try_with (fun () -> Reader.file_contents path)
     >>| function
     | Ok c -> c
-    | Error _ -> "" (* deleted file: no new side *)
+    | Error _ -> "" (* deleted file *)
+  in
+  let diff, old_content, new_content =
+    match side with
+    | `Unstaged ->
+      Git.Queries.diff_unstaged path, or_empty (Git.Queries.file_in_index path), worktree
+    | `Staged ->
+      ( Git.Queries.diff_staged path
+      , or_empty (Git.Queries.file_at_head path)
+      , or_empty (Git.Queries.file_in_index path) )
   in
   let%bind diff in
   let%bind old_content in
@@ -44,7 +56,8 @@ let fetch_text path =
    fetch must not write — a slow fetch for a de-selected (or quickly
    re-selected) file landing last would wedge or stale the pane — and stops
    early, skipping highlight parses for files no longer on screen. *)
-let load t ~path ~set =
+let load t ~key ~set =
+  let path, _side = key in
   let%bind.Effect mine =
     Effect.of_thunk (fun () ->
       incr t.generation;
@@ -54,9 +67,9 @@ let load t ~path ~set =
     let%bind.Effect current = Effect.of_thunk (fun () -> !(t.generation)) in
     if current = mine then eff else Effect.Ignore
   in
-  let%bind.Effect fetched = Effect.of_deferred_thunk (fun () -> fetch_text path) in
+  let%bind.Effect fetched = Effect.of_deferred_thunk (fun () -> fetch_text key) in
   match fetched with
-  | Error e -> when_current (set (Some (path, Error e)))
+  | Error e -> when_current (set (Some (key, Error e)))
   | Ok (files, old_content, new_content) ->
     when_current
       ((* The document build runs off the scheduler (flattening a 646K-line
@@ -75,10 +88,14 @@ let load t ~path ~set =
          when_current
            (set
               (Some
-                 ( path
+                 ( key
                  , Ok
-                     { document; binary_only; old_hl = Highlight.empty; new_hl = Highlight.empty }
-                 )))
+                     { document
+                     ; files
+                     ; binary_only
+                     ; old_hl = Highlight.empty
+                     ; new_hl = Highlight.empty
+                     } )))
        in
        (* Phase two: highlight sessions parse in their own domains and swap
           in when ready — frames never wait on a parse. *)
@@ -88,7 +105,7 @@ let load t ~path ~set =
              (Highlight.create ~path old_content)
              (Highlight.create ~path new_content))
        in
-       when_current (set (Some (path, Ok { document; binary_only; old_hl; new_hl }))))
+       when_current (set (Some (key, Ok { document; files; binary_only; old_hl; new_hl }))))
 ;;
 
 let clear t ~set =

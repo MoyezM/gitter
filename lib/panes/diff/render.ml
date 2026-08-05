@@ -15,14 +15,14 @@ type content =
   ]
 
 (* What the pane should show. One arm owns freshness: only a result tagged
-   with the CURRENT selection's path renders; anything else is still
-   loading. *)
+   with the CURRENT selection key (path AND side) renders; anything else is
+   still loading. *)
 let content ~selection ~(result : Fetch.result) : content =
   match selection with
   | None -> `Message "no file selected"
   | Some sel ->
     (match result with
-     | Some (path, r) when String.equal sel path ->
+     | Some (key, r) when [%equal: string * [ `Staged | `Unstaged ]] sel key ->
        (match r with
         | Error e -> `Message ("git error: " ^ Error.to_string_hum e)
         | Ok (payload : Fetch.payload) ->
@@ -38,9 +38,21 @@ let content ~selection ~(result : Fetch.result) : content =
 (* Render a line as syntax-colored spans over the row's background. The row
    is truncated then padded to exactly [width], so the tint runs the full
    pane and never overflows it. *)
-let spans_view ~base ~spans ~width text =
+let spans_view ~base ~spans ~width ~pan text =
   let default_fg = [ Attr.fg Theme.text ] in
   let piece ~fg s = seg (fg @ base) s in
+  (* Pan: slice the leading columns off text and spans alike (byte-based,
+     consistent with the rest of the column math). *)
+  let text = if pan > 0 then String.drop_prefix text pan else text in
+  let spans =
+    if pan = 0
+    then spans
+    else
+      List.filter_map spans ~f:(fun { Highlight.Span.start_col; end_col; capture } ->
+        let start_col = Int.max 0 (start_col - pan)
+        and end_col = end_col - pan in
+        if end_col <= 0 then None else Some { Highlight.Span.start_col; end_col; capture })
+  in
   (* Truncate to at most [width] CODEPOINTS. Each codepoint occupies at
      least one cell, so more can never fit — but cutting by BYTES would
      discard multibyte content that fits the cell budget, and could split a
@@ -110,7 +122,7 @@ let hunk_rule ~width header =
     ]
 ;;
 
-let render_line ~width ~old_spans ~new_spans ~cursor_here (line : Document.line) =
+let render_line ~width ~old_spans ~new_spans ~cursor_here ~pan (line : Document.line) =
   match line with
   | File_header p -> seg Theme.header p
   | Hunk_header h -> hunk_rule ~width h
@@ -128,12 +140,12 @@ let render_line ~width ~old_spans ~new_spans ~cursor_here (line : Document.line)
       match line with
       | Git.Diff.Line.Added s ->
         ( seg Theme.added_bar "\u{258E} "
-        , spans_view ~base:[ Attr.bg Theme.added_bg ] ~spans:new_spans ~width:content_width s )
+        , spans_view ~base:[ Attr.bg Theme.added_bg ] ~spans:new_spans ~width:content_width ~pan s )
       | Removed s ->
         ( seg Theme.removed_bar "\u{258E} "
-        , spans_view ~base:[ Attr.bg Theme.removed_bg ] ~spans:old_spans ~width:content_width s )
+        , spans_view ~base:[ Attr.bg Theme.removed_bg ] ~spans:old_spans ~width:content_width ~pan s )
       | Context s ->
-        seg Theme.context "  ", spans_view ~base:[] ~spans:new_spans ~width:content_width s
+        seg Theme.context "  ", spans_view ~base:[] ~spans:new_spans ~width:content_width ~pan s
     in
     View.hcat [ gutter; bar; content ]
 ;;
@@ -205,13 +217,19 @@ let render ~(content : content) ~(model : State.Model.t) ~(dimensions : Dimensio
       Array.sub doc ~pos:scroll ~len:(Int.min height (Array.length doc - scroll))
     in
     let old_spans, new_spans = span_lookups ~old_hl ~new_hl visible in
-    View.vcat
-      (Array.to_list
-         (Array.mapi visible ~f:(fun i line ->
-            render_line
-              ~width:dimensions.width
-              ~old_spans:old_spans.(i)
-              ~new_spans:new_spans.(i)
-              ~cursor_here:(i + scroll = cursor)
-              line)))
+    let bar = Scrollbar.view ~total:(Array.length doc) ~visible:height ~offset:scroll in
+    let width = dimensions.width - if Option.is_some bar then 1 else 0 in
+    let body =
+      View.vcat
+        (Array.to_list
+           (Array.mapi visible ~f:(fun i line ->
+              render_line
+                ~width
+                ~old_spans:old_spans.(i)
+                ~new_spans:new_spans.(i)
+                ~cursor_here:(i + scroll = cursor)
+                ~pan:model.pan
+                line)))
+    in
+    Scrollbar.attach ~width:dimensions.width ~bar body
 ;;

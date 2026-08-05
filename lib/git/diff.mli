@@ -15,6 +15,9 @@ module Hunk : sig
     ; old_start : int (** first line number on the pre-image side *)
     ; new_start : int (** first line number on the post-image side *)
     ; lines : Line.t list
+    ; raw : string
+      (** the hunk verbatim, header through last body line (including
+          [\ No newline] markers) — byte-exact input for [git apply] *)
     }
 
   (** Each line paired with its (old, new) line numbers; [None] on the side

@@ -18,3 +18,7 @@ val of_files : Git.Diff.File.t list -> t
 
 (** The rows the cursor may rest on. *)
 val is_diff_line : line -> bool
+
+(** The (file index, hunk index) enclosing [row] — for staging the hunk
+    under the cursor. None above the first hunk or on an empty document. *)
+val hunk_at : t -> row:int -> (int * int) option

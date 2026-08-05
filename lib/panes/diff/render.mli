@@ -8,9 +8,10 @@ type content =
   | `Document of Document.t * Highlight.t * Highlight.t
   ]
 
-(** Freshness owner: only a result tagged with the CURRENT selection's path
-    renders as a document; a mismatched or missing result is "loading". *)
-val content : selection:string option -> result:Fetch.result -> content
+(** Freshness owner: only a result tagged with the CURRENT selection key
+    (path and side) renders as a document; a mismatched or missing result
+    is "loading". *)
+val content : selection:Fetch.key option -> result:Fetch.result -> content
 
 (** Renders the viewport slice: scroll clamped via [State.clamp_scroll], the
     cursor row from [State.effective_cursor], one highlight window per

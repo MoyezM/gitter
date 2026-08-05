@@ -4,9 +4,10 @@ module Model = struct
   type t =
     { cursor : int
     ; scroll : int
+    ; pan : int (* horizontal column offset of the content area *)
     }
 
-  let initial = { cursor = 0; scroll = 0 }
+  let initial = { cursor = 0; scroll = 0; pan = 0 }
 end
 
 module Action = struct
@@ -15,9 +16,13 @@ module Action = struct
     | Half_page of int
     | Wheel of int
     | Click of int
+    | Pan of int (* direction: +1 right, -1 left *)
     | Reset
   [@@deriving sexp_of]
 end
+
+(* Horizontal panning: a flat few columns per press. *)
+let pan_step = 4
 
 (* The view keeps the cursor this many rows from its edges when following. *)
 let scrolloff = 5
@@ -94,7 +99,7 @@ let follow (doc : Document.t) ~height ~cursor scroll =
 let move doc (model : Model.t) ~height ~by =
   let cursor = snap doc ~dir:(Int.compare by 0) (effective_cursor doc model ~height + by) in
   let scroll = follow doc ~height ~cursor model.scroll in
-  { Model.cursor; scroll }
+  { model with Model.cursor; scroll }
 ;;
 
 (* Wheel scrolls the VIEW; the cursor is then clamped to stay visible. *)
@@ -103,7 +108,21 @@ let wheel doc (model : Model.t) ~height ~dir =
   let cursor =
     model.cursor |> Int.max scroll |> Int.min (scroll + height - 1) |> snap doc ~dir
   in
-  { Model.cursor; scroll }
+  { model with Model.cursor; scroll }
+;;
+
+(* The pan limit: just past the longest line VISIBLE right now — panning
+   into blank space beyond every visible line is disorienting. *)
+let max_pan (doc : Document.t) ~height ~scroll =
+  let stop = Int.min (Array.length doc) (scroll + height) in
+  let longest = ref 0 in
+  for i = scroll to stop - 1 do
+    match doc.(i) with
+    | Document.Diff_line (_, _, (Added s | Removed s | Context s)) ->
+      longest := Int.max !longest (String.length s)
+    | File_header _ | Hunk_header _ -> ()
+  done;
+  Int.max 0 (!longest - 8)
 ;;
 
 let apply_action (doc : Document.t) (model : Model.t) (action : Action.t) ~height =
@@ -118,4 +137,12 @@ let apply_action (doc : Document.t) (model : Model.t) (action : Action.t) ~heigh
   | Half_page dir -> move doc model ~height ~by:(dir * height / 2)
   | Wheel dir -> wheel doc model ~height ~dir
   | Click row -> { model with Model.cursor = snap doc ~dir:1 (model.scroll + row) }
+  | Pan dir ->
+    { model with
+      Model.pan =
+        Int.clamp_exn
+          (model.pan + (pan_step * dir))
+          ~min:0
+          ~max:(max_pan doc ~height ~scroll:model.scroll)
+    }
 ;;

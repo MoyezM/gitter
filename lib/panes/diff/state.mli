@@ -13,6 +13,7 @@ module Model : sig
   type t =
     { cursor : int (** document row index *)
     ; scroll : int (** first visible document row *)
+    ; pan : int (** horizontal column offset of the content area *)
     }
 
   val initial : t
@@ -24,6 +25,9 @@ module Action : sig
     | Half_page of int (** direction: +1 down, -1 up *)
     | Wheel of int (** direction: +1 down, -1 up *)
     | Click of int (** viewport row that was clicked *)
+    | Pan of int
+        (** direction: +1 right, -1 left; 4-column steps, clamped just past
+            the longest visible line; the gutter never pans *)
     | Reset
   [@@deriving sexp_of]
 end

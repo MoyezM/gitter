@@ -29,19 +29,26 @@ let file_at_head ?working_dir path = Runner.git ?working_dir [ "show"; "HEAD:" ^
    change" means in the uncommitted view. Untracked files have no diff vs
    HEAD, so fall back to a --no-index diff against /dev/null (which exits 1
    when the file is non-empty, hence [accept_nonzero_exit]). *)
+(* Parsing runs in a domain: a 530k-line diff (whole-file-added 17MB) costs
+   ~110ms, which would stall ~7 frames on the scheduler. *)
+let parse_off_thread output =
+  let%map.Deferred files = Cpu.in_domain (fun () -> Diff.parse output) in
+  Ok files
+;;
+
 let diff_file_vs_head ?working_dir path =
   match%bind.Deferred.Or_error
     Runner.git ?working_dir [ "diff"; "--no-color"; "HEAD"; "--"; path ]
   with
   | "" ->
-    let%map.Deferred.Or_error output =
+    let%bind.Deferred.Or_error output =
       Runner.git
         ?working_dir
         ~accept_nonzero_exit:[ 1 ]
         [ "diff"; "--no-color"; "--no-index"; "--"; "/dev/null"; path ]
     in
-    Diff.parse output
-  | output -> Deferred.Or_error.return (Diff.parse output)
+    parse_off_thread output
+  | output -> parse_off_thread output
 ;;
 
 (* The diff of the whole tree relative to [base] (merge-base semantics via

@@ -20,50 +20,45 @@ type payload =
   ; new_hl : Highlight.t
   }
 
-let fetch path =
+(* Phase one of a fetch: the diff and both blob contents — no highlighting.
+   The three reads are independent; start them all before binding
+   (benchmarked at ~20-40ms each — serializing them tripled the latency
+   floor of every fetch). *)
+let fetch_text path =
   let open Async in
-  Git.Queries.diff_file_vs_head path
-  >>= function
-  | Error _ as e -> return e
-  | Ok files ->
-    let%bind old_content =
-      Git.Queries.file_at_head path
-      >>| function
-      | Ok c -> c
-      | Error _ -> "" (* new/untracked file: no old side *)
-    in
-    let%bind new_content =
-      Monitor.try_with (fun () -> Reader.file_contents path)
-      >>| function
-      | Ok c -> c
-      | Error _ -> "" (* deleted file: no new side *)
-    in
-    return
-      (Ok
-         { files
-         ; old_hl = Highlight.of_content ~path old_content
-         ; new_hl = Highlight.of_content ~path new_content
-         })
+  let diff = Git.Queries.diff_file_vs_head path in
+  let old_content =
+    Git.Queries.file_at_head path
+    >>| function
+    | Ok c -> c
+    | Error _ -> "" (* new/untracked file: no old side *)
+  in
+  let new_content =
+    Monitor.try_with (fun () -> Reader.file_contents path)
+    >>| function
+    | Ok c -> c
+    | Error _ -> "" (* deleted file: no new side *)
+  in
+  let%bind diff in
+  let%bind old_content in
+  let%bind new_content in
+  match diff with
+  | Error e -> return (Error e)
+  | Ok files -> return (Ok (files, old_content, new_content))
 ;;
 
 type display_line =
   | File_header of string
   | Hunk_header of string
-  | Diff_line of int option * int option * Git.Diff.Line.t * Highlight.Span.t list
+  | Diff_line of int option * int option * Git.Diff.Line.t
 
-let flatten { files; old_hl; new_hl } =
+let flatten files =
   let many = List.length files > 1 in
-  List.concat_map files ~f:(fun file ->
+  List.concat_map files ~f:(fun (file : Git.Diff.File.t) ->
     (if many then [ File_header file.path ] else [])
     @ List.concat_map file.hunks ~f:(fun hunk ->
       Hunk_header hunk.header
-      :: List.map (Git.Diff.Hunk.numbered hunk) ~f:(fun (o, n, l) ->
-        let spans =
-          match l with
-          | Git.Diff.Line.Removed _ -> Option.value_map o ~default:[] ~f:(Highlight.line old_hl)
-          | Added _ | Context _ -> Option.value_map n ~default:[] ~f:(Highlight.line new_hl)
-        in
-        Diff_line (o, n, l, spans))))
+      :: List.map (Git.Diff.Hunk.numbered hunk) ~f:(fun (o, n, l) -> Diff_line (o, n, l))))
 ;;
 
 (* Render a line as syntax-colored spans over the row's background, padded
@@ -118,13 +113,18 @@ let hunk_rule ~width header =
     ]
 ;;
 
-let render_line ~width = function
+let render_line ~width ~old_spans ~new_spans = function
   | File_header p -> seg Theme.header p
   | Hunk_header h -> hunk_rule ~width h
-  | Diff_line (old_no, new_no, line, spans) ->
+  | Diff_line (old_no, new_no, line) ->
     let gutter = seg Theme.context (number old_no ^ number new_no) in
     (* Two number columns (5 wide each) plus the 2-wide bar column. *)
     let content_width = Int.max 1 (width - 12) in
+    let spans =
+      match line with
+      | Git.Diff.Line.Removed _ -> Option.value_map old_no ~default:[] ~f:old_spans
+      | Added _ | Context _ -> Option.value_map new_no ~default:[] ~f:new_spans
+    in
     let bar, content =
       match line with
       | Added s ->
@@ -146,17 +146,45 @@ let content ~selection ~result =
   | Some sel, Some (path, _) when not (String.equal sel path) -> `Message "loading diff..."
   | Some _, Some (_, Error e) -> `Message ("git error: " ^ Error.to_string_hum e)
   | Some _, Some (_, Ok payload) ->
-    (match flatten payload with
+    (match flatten payload.files with
      | [] -> `Message "no changes vs HEAD"
-     | lines -> `Lines lines)
+     | lines -> `Lines (lines, payload.old_hl, payload.new_hl))
+;;
+
+(* The visible slice's line-number ranges on each side, for windowed
+   highlight queries. *)
+let side_ranges visible =
+  List.fold visible ~init:(None, None) ~f:(fun (old_r, new_r) line ->
+    match line with
+    | Diff_line (o, n, _) ->
+      let extend r v =
+        match r, v with
+        | r, None -> r
+        | None, Some v -> Some (v, v)
+        | Some (lo, hi), Some v -> Some (Int.min lo v, Int.max hi v)
+      in
+      extend old_r o, extend new_r n
+    | File_header _ | Hunk_header _ -> old_r, new_r)
 ;;
 
 let render ~lines ~scroll ~(dimensions : Dimensions.t) =
   match lines with
   | `Message m -> seg Theme.context (" " ^ m)
-  | `Lines lines ->
+  | `Lines (lines, old_hl, new_hl) ->
     let visible = List.take (List.drop lines scroll) dimensions.height in
-    View.vcat (List.map visible ~f:(render_line ~width:dimensions.width))
+    (* One ranged query per side per frame, over only the visible lines. *)
+    let old_range, new_range = side_ranges visible in
+    let lookup hl range =
+      match range with
+      | None -> fun _ -> []
+      | Some (from_line, to_line) ->
+        let window = Highlight.window hl ~from_line ~to_line in
+        fun line -> Highlight.line_in_window window ~from_line line
+    in
+    let old_spans = lookup old_hl old_range in
+    let new_spans = lookup new_hl new_range in
+    View.vcat
+      (List.map visible ~f:(render_line ~width:dimensions.width ~old_spans ~new_spans))
 ;;
 
 let component ~(selection : string option Bonsai.t) : Widget.t =
@@ -170,8 +198,24 @@ let component ~(selection : string option Bonsai.t) : Widget.t =
       | None -> set_result None
       | Some path ->
         let%bind.Effect () = set_scroll 0 in
-        let%bind.Effect diff = Effect.of_deferred_thunk (fun () -> fetch path) in
-        set_result (Some (path, diff))
+        let%bind.Effect fetched = Effect.of_deferred_thunk (fun () -> fetch_text path) in
+        (match fetched with
+         | Error e -> set_result (Some (path, Error e))
+         | Ok (files, old_content, new_content) ->
+           (* Two-phase: the diff text renders immediately (plain); the
+              highlight sessions parse in their own domains and swap in when
+              ready — frames never wait on a parse. *)
+           let%bind.Effect () =
+             set_result
+               (Some (path, Ok { files; old_hl = Highlight.empty; new_hl = Highlight.empty }))
+           in
+           let%bind.Effect old_hl, new_hl =
+             Effect.of_deferred_thunk (fun () ->
+               Async.Deferred.both
+                 (Highlight.create ~path old_content)
+                 (Highlight.create ~path new_content))
+           in
+           set_result (Some (path, Ok { files; old_hl; new_hl })))
   in
   Bonsai.Edge.on_change ~equal:[%equal: string option] ~callback selection graph;
   (* Flattened once per fetch — NOT per scroll step; on a 100k-line diff
@@ -190,7 +234,7 @@ let component ~(selection : string option Bonsai.t) : Widget.t =
     let line_count =
       match lines with
       | `Message _ -> 0
-      | `Lines lines -> List.length lines
+      | `Lines (lines, _, _) -> List.length lines
     in
     let max_scroll = Int.max 0 (line_count - dimensions.height) in
     let scroll_by delta = set_scroll (Int.max 0 (Int.min max_scroll (scroll + delta))) in

@@ -94,8 +94,15 @@ let () =
 let activate row = State.Action.Activate { row; height = 10 }
 let collapse = State.Action.Collapse { height = 10 }
 
-let sel key = { State.Model.initial with selection = Some key }
-let selected (m : State.Model.t) = m.selection
+module Listing = Gitter.Panes.Listing
+
+let sel key =
+  { State.Model.initial with
+    listing = { Listing.Model.initial with selection = Some key }
+  }
+;;
+
+let selected (m : State.Model.t) = State.selection_key m
 
 let () =
   let m = apply (activate 2) in
@@ -159,26 +166,26 @@ let () =
    motion reveals it again with minimal scroll movement. *)
 let () =
   let m = apply (State.Action.Wheel { dir = 1; height = 3 }) in
-  check "wheel scrolls the viewport" (m.scroll = 3);
+  check "wheel scrolls the viewport" (State.scroll m = 3);
   check "wheel leaves the selection put" (Option.is_none (selected m));
   let m2 = State.apply_action ~entries m (State.Action.Wheel { dir = 1; height = 3 }) in
-  check "wheel steps accumulate and clamp to the last page" (m2.scroll = 5);
+  check "wheel steps accumulate and clamp to the last page" (State.scroll m2 = 5);
   let m3 = State.apply_action ~entries m2 (State.Action.Move { dir = `Down; height = 3 }) in
   check "selection motion reveals it"
-    ([%equal: string option] (selected m3) (Some "REVIEW.md") && m3.scroll = 1);
+    ([%equal: string option] (selected m3) (Some "REVIEW.md") && State.scroll m3 = 1);
   let visible =
     State.apply_action
       ~entries
-      { m with selection = Some "bench/dune" }
+      { m with listing = { m.listing with selection = Some "bench/dune" } }
       (State.Action.Move { dir = `Down; height = 3 })
   in
   check "motion inside the viewport does not scroll"
-    ([%equal: string option] (selected visible) (Some "lib") && visible.scroll = 3);
+    ([%equal: string option] (selected visible) (Some "lib") && State.scroll visible = 3);
   let clicked = State.apply_action ~entries m (State.Action.Activate { row = 4; height = 3 }) in
   check "clicking a visible row keeps the viewport"
-    ([%equal: string option] (selected clicked) (Some "bench/dune") && clicked.scroll = 3);
-  check "offset clamps to the last page" (State.offset ~total:8 ~height:3 99 = 5);
-  check "offset floors at zero" (State.offset ~total:8 ~height:3 (-2) = 0)
+    ([%equal: string option] (selected clicked) (Some "bench/dune") && State.scroll clicked = 3);
+  check "offset clamps to the last page" (Listing.offset ~total:8 ~height:3 99 = 5);
+  check "offset floors at zero" (Listing.offset ~total:8 ~height:3 (-2) = 0)
 ;;
 
 (* The repair law: stable under reorder; a vanished key moves to its
@@ -192,7 +199,7 @@ let () =
       State.Action.Rows_changed
   in
   check "survivor is kept" ([%equal: string option] (selected m) (Some "b"));
-  check "keys are snapshotted" (List.equal String.equal m.keys [ "a"; "b"; "c" ]);
+  check "keys are snapshotted" (List.equal String.equal m.listing.keys [ "a"; "b"; "c" ]);
   let staged =
     State.apply_action ~entries:(flat [ "a"; "c" ]) m State.Action.Rows_changed
   in
@@ -211,7 +218,7 @@ let () =
     ([%equal: string option] (selected last_removed) (Some "a"));
   check "pure repair is total on unknown keys"
     (Option.is_none
-       (State.repair ~old_keys:[] ~selection:(Some "ghost") ~new_keys:[ "a" ]))
+       (Listing.repair ~old_keys:[] ~selection:(Some "ghost") ~new_keys:[ "a" ]))
 ;;
 
 (* Total on empty data. *)
@@ -227,7 +234,7 @@ let () =
     ]
     ~f:(fun action ->
       let m = State.apply_action ~entries:[] State.Model.initial action in
-      check "empty entries are total" (Option.is_none m.selection))
+      check "empty entries are total" (Option.is_none (State.selection_key m)))
 ;;
 
 let () = print_endline "All tree tests passed."

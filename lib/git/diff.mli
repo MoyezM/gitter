@@ -33,3 +33,7 @@ module File : sig
 end
 
 val parse : string -> File.t list
+
+(** Parsed --numstat output: [(path, (added, removed))] per file, rename
+    fields resolved to the NEW path, binary files dropped. Total. *)
+val numstat : string -> (string * (int * int)) list

@@ -61,15 +61,10 @@ let render ~(status : status) ~(model : State.Model.t) ~(dimensions : Dimensions
   | `Empty message -> seg Theme.context (" " ^ message)
   | `Stack branches ->
     let rows = State.visible ~branches ~overrides:model.overrides in
-    let height = dimensions.height in
-    let offset = State.offset ~total:(List.length rows) ~height model.scroll in
-    let cursor = State.index_of rows model.selection in
-    let bar = Scrollbar.view ~total:(List.length rows) ~visible:height ~offset in
-    let row_width = dimensions.width - if Option.is_some bar then 1 else 0 in
-    let body =
-      View.vcat
-        (List.take (List.drop rows offset) height
-         |> List.mapi ~f:(fun i r -> row ~width:row_width ~selected:(i + offset = cursor) r))
-    in
-    Scrollbar.attach ~width:dimensions.width ~bar body
+    List_view.render
+      ~rows
+      ~scroll:(State.scroll model)
+      ~cursor:(State.index_of rows (State.selection_key model))
+      ~dimensions
+      ~row:(fun ~selected ~width r -> row ~width ~selected r)
 ;;

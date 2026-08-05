@@ -173,3 +173,16 @@ let stack () =
     in
     Branch_stack.parse ~heads:heads_raw ~dag ~reflogs ~trunk ~current
 ;;
+
+(* Per-file +/- line counts per side (the panes also sum them for the
+   title bars). Binary files (numstat prints "-") are skipped; untracked
+   files are not in numstat, so their whole-file adds are not counted. *)
+let diffstat () =
+  let by_path output =
+    Diff.numstat output |> String.Map.of_alist_reduce ~f:(fun first _ -> first)
+  in
+  let open Deferred.Or_error.Let_syntax in
+  let%bind staged = Runner.git [ "diff"; "--no-color"; "--numstat"; "--cached" ] in
+  let%map unstaged = Runner.git [ "diff"; "--no-color"; "--numstat" ] in
+  by_path staged, by_path unstaged
+;;

@@ -13,6 +13,7 @@ let component
       ~rows
       ~cursor
       ~scroll
+      ~counts
       ~side
       ~stage
       ~unstage
@@ -24,8 +25,8 @@ let component
   =
   fun ~dimensions (local_ _graph) ->
   let view =
-    let%arr status and rows and cursor and scroll and dimensions in
-    Render.render ~status ~rows ~cursor ~scroll ~side ~dimensions
+    let%arr status and rows and cursor and scroll and counts and dimensions in
+    Render.render ~status ~rows ~cursor ~scroll ~counts ~side ~dimensions
   in
   let handler =
     let%arr inject
@@ -48,7 +49,7 @@ let component
     in
     fun (event : Event.t) ->
       let height = dimensions.height in
-      let offset = State.offset ~total:(List.length rows) ~height scroll in
+      let offset = Listing.offset ~total:(List.length rows) ~height scroll in
       match event with
       | Event.Key_press { key = ASCII 's'; mods = [] } -> operate stage
       | Key_press { key = ASCII 'u'; mods = [] } -> operate unstage

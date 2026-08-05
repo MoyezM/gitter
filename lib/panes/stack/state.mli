@@ -26,12 +26,8 @@ end
 
 module Model : sig
   type t =
-    { selection : string option
-      (** row KEY — stable under reorder; repaired to the nearest
-          surviving successor when the row disappears *)
-    ; scroll : int
+    { listing : Listing.Model.t
     ; overrides : bool String.Map.t (** row key -> collapsed, user-toggled *)
-    ; keys : string list (** visible rows' keys at the last transition *)
     }
 
   val initial : t
@@ -64,8 +60,8 @@ val visible
   -> overrides:bool String.Map.t
   -> Row.t list
 
-(** The viewport mapping shared by render and the click handler. *)
-val offset : total:int -> height:int -> int -> int
+val selection_key : Model.t -> string option
+val scroll : Model.t -> int
 
 (** The selection's position in [rows]; missing/unset keys read as the
     first row. *)

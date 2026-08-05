@@ -17,6 +17,8 @@ module Tree = struct
     | Leaf of
         { id : string
         ; title : string Bonsai.t (* dynamic: e.g. the selected file's path *)
+        ; title_right : View.t option Bonsai.t
+          (* right-aligned title-bar extra, e.g. +/- diffstat counts *)
         ; component : Widget.t
         }
     | Split of
@@ -24,7 +26,10 @@ module Tree = struct
         ; children : (float * t) list
         }
 
-  let leaf ~id ~title component = Leaf { id; title; component }
+  let leaf ?(title_right = Bonsai.return None) ~id ~title component =
+    Leaf { id; title; title_right; component }
+  ;;
+
   let split axis children = Split { axis; children }
 
   (* Desugars to the solver's binary core with hidden leaves pruned; a
@@ -43,7 +48,7 @@ module Tree = struct
   ;;
 
   let rec leaves = function
-    | Leaf { id; title; component } -> [ id, title, component ]
+    | Leaf { id; title; title_right; component } -> [ id, title, title_right, component ]
     | Split { children; _ } -> List.concat_map children ~f:(fun (_, c) -> leaves c)
   ;;
 end
@@ -87,13 +92,13 @@ let instantiate_leaves ~solved leaves (local_ graph) =
      (which captures the local [graph]) would need to outlive this
      function's region, which the mode checker rejects. *)
   let instantiated =
-    List.map leaves ~f:(fun (id, title, component) ->
+    List.map leaves ~f:(fun (id, title, title_right, component) ->
       let dims =
         let%arr solved in
         leaf_dimensions ~solved id
       in
       let ~view, ~handler = component ~dimensions:dims graph in
-      id, title, view, handler)
+      id, title, title_right, view, handler)
   in
   instantiated
 ;;
@@ -103,7 +108,7 @@ let instantiate_leaves ~solved leaves (local_ graph) =
    hand them to other layers — e.g. Space-menu commands that drive focus and
    zoom. *)
 let state ?(initially_hidden = String.Set.empty) (tree : Tree.t) (local_ graph) =
-  let leaf_ids = List.map (Tree.leaves tree) ~f:(fun (id, _, _) -> id) in
+  let leaf_ids = List.map (Tree.leaves tree) ~f:(fun (id, _, _, _) -> id) in
   let first_leaf =
     List.find leaf_ids ~f:(fun id -> not (Set.mem initially_hidden id))
     |> Option.value ~default:(List.hd_exn leaf_ids)
@@ -141,13 +146,13 @@ let component (tree : Tree.t) ~model ~inject : Widget.t =
   let instantiated = instantiate_leaves ~solved leaf_list graph in
   let leaf_views =
     all
-      (List.map instantiated ~f:(fun (id, title, view, _) ->
-         let%arr view and title in
-         id, title, view))
+      (List.map instantiated ~f:(fun (id, title, title_right, view, _) ->
+         let%arr view and title and title_right in
+         id, title, title_right, view))
   in
   let leaf_handlers =
     all
-      (List.map instantiated ~f:(fun (id, _, _, handler) ->
+      (List.map instantiated ~f:(fun (id, _, _, _, handler) ->
          let%arr handler in
          id, handler))
   in

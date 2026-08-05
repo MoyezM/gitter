@@ -175,4 +175,17 @@ let () =
        [ Context "# gitter"; Added "A git TUI." ])
 ;;
 
+
+(* numstat: per-file counts, rename fields resolved to the new path,
+   binary files dropped. *)
+let () =
+  let out = "3\t1\tlib/app.ml\n-\t-\tbin/blob.png\n2\t0\tlib/{old => new}/x.ml\n5\t4\ta.ml => b.ml\n" in
+  let parsed = Gitter.Git.Diff.numstat out in
+  check
+    "numstat parses counts, renames, and drops binary"
+    ([%equal: (string * (int * int)) list]
+       parsed
+       [ "lib/app.ml", (3, 1); "lib/new/x.ml", (2, 0); "b.ml", (5, 4) ])
+;;
+
 let () = print_endline "All git parser tests passed."

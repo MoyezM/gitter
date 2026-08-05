@@ -190,8 +190,16 @@ let branches =
   : Stack.Branch.t list)
 ;;
 
+module Listing = Gitter.Panes.Listing
+
 let keys rows = List.map rows ~f:(fun (r : PS.Row.t) -> r.key)
 let no_overrides = String.Map.empty
+
+let psel key =
+  { PS.Model.initial with
+    listing = { Listing.Model.initial with selection = Some key }
+  }
+;;
 
 let () =
   let rows = PS.visible ~branches ~overrides:no_overrides in
@@ -216,7 +224,7 @@ let () =
 let () =
   (* Unfold the codex group: members appear under the folder row,
      selection stays on the folder by key. *)
-  let m = { PS.Model.initial with selection = Some "main//codex" } in
+  let m = psel "main//codex" in
   let m = PS.apply_action ~branches m (PS.Action.Unfold { height = 10 }) in
   let rows = PS.visible ~branches ~overrides:m.overrides in
   check
@@ -226,10 +234,10 @@ let () =
        (keys rows)
        [ "main"; "b1"; "b2"; "b3"; "old"; "main//codex"; "codex/one"; "codex/two"; "lone" ]);
   check "selection stayed on the folder"
-    ([%equal: string option] m.selection (Some "main//codex"));
+    ([%equal: string option] (PS.selection_key m) (Some "main//codex"));
   (* Fold b1: hides the whole current chain under it (explicit override
      beats the contains-current default). *)
-  let m2 = { PS.Model.initial with selection = Some "b1" } in
+  let m2 = psel "b1" in
   let m2 = PS.apply_action ~branches m2 (PS.Action.Fold { height = 10 }) in
   let rows2 = PS.visible ~branches ~overrides:m2.overrides in
   check
@@ -241,36 +249,36 @@ let () =
   check "folded row counts its hidden branches"
     ((List.find_exn rows2 ~f:(fun r -> String.equal r.key "b1")).hidden = 2);
   check "selection stayed on the folded row"
-    ([%equal: string option] m2.selection (Some "b1"))
+    ([%equal: string option] (PS.selection_key m2) (Some "b1"))
 ;;
 
 let () =
   (* Fold on a leaf jumps to the parent; wheel scrolls without moving the
      selection; totality on empty. *)
-  let m = { PS.Model.initial with selection = Some "lone" } in
+  let m = psel "lone" in
   let m = PS.apply_action ~branches m (PS.Action.Fold { height = 10 }) in
   check "fold on a leaf jumps to the parent"
-    ([%equal: string option] m.selection (Some "main"));
+    ([%equal: string option] (PS.selection_key m) (Some "main"));
   let m = PS.apply_action ~branches PS.Model.initial (PS.Action.Wheel { dir = 1; height = 3 }) in
-  check "wheel scrolls the viewport only" (m.scroll = 3 && Option.is_none m.selection);
+  check "wheel scrolls the viewport only" (PS.scroll m = 3 && Option.is_none (PS.selection_key m));
   let e = PS.apply_action ~branches:[] PS.Model.initial (PS.Action.Move { dir = `Down; height = 5 }) in
-  check "empty stack is total" (Option.is_none e.selection && e.scroll = 0)
+  check "empty stack is total" (Option.is_none (PS.selection_key e) && PS.scroll e = 0)
 ;;
 
 (* Selection survives the reorders the recency sort produces, and repairs
    to a successor when the branch disappears. *)
 let () =
-  let m = { PS.Model.initial with selection = Some "old" } in
+  let m = psel "old" in
   let m = PS.apply_action ~branches m PS.Action.Rows_changed in
   check "selection sticks across a resort"
-    ([%equal: string option] m.selection (Some "old"));
+    ([%equal: string option] (PS.selection_key m) (Some "old"));
   let reordered =
     (* old moved: same rows, different sibling order (lone before old) *)
     List.filter branches ~f:(fun b -> not (String.equal b.name "old"))
   in
   let m2 = PS.apply_action ~branches:reordered m PS.Action.Rows_changed in
   check "deleted branch flows to its successor"
-    ([%equal: string option] m2.selection (Some "main//codex"))
+    ([%equal: string option] (PS.selection_key m2) (Some "main//codex"))
 ;;
 
 let () = print_endline "All stack tests passed."

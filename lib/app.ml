@@ -40,17 +40,50 @@ let layout_tree ~(data : Git_data.t) ~discard ~commit ~copy_path =
        | Ok [] -> `Empty "no branch stack"
        | Ok branches -> `Stack branches)
   in
+  (* +/- line totals on the right of the section title bars; hidden when
+     the side has no changes. *)
+  let counts lines =
+    let%arr stat = data.diffstat in
+    let added, removed =
+      Map.fold (lines stat) ~init:(0, 0) ~f:(fun ~key:_ ~data:(a, d) (ta, td) ->
+        ta + a, td + d)
+    in
+    if added = 0 && removed = 0
+    then None
+    else
+      Some
+        (View.hcat
+           [ View.text " "
+           ; View.text ~attrs:[ Attr.fg Theme.green ] (sprintf "+%d" added)
+           ; View.text " "
+           ; View.text ~attrs:[ Attr.fg Theme.red ] (sprintf "-%d" removed)
+           ; View.text " "
+           ])
+  in
   let noop = Bonsai.return (fun (_ : string) -> Effect.Ignore) in
-  let files_pane ~id ~title ~side ~stage ~unstage ~discard (section : Git_data.section_data) ~empty
+  let files_pane
+        ~id
+        ~title
+        ~lines
+        ~side
+        ~stage
+        ~unstage
+        ~discard
+        (section : Git_data.section_data)
+        ~empty
     =
     Layout.Component.Tree.leaf
       ~id
       ~title:(Bonsai.return title)
+      ~title_right:(counts lines)
       (Panes.Files.Component.component
          ~status:(files_status section.rows ~empty)
          ~rows:section.rows
          ~cursor:section.cursor
          ~scroll:section.scroll
+         ~counts:
+           (let%arr stat = data.diffstat in
+            lines stat)
          ~side
          ~stage
          ~unstage
@@ -69,6 +102,7 @@ let layout_tree ~(data : Git_data.t) ~discard ~commit ~copy_path =
               , files_pane
                   ~id:"staged"
                   ~title:"Staged"
+                  ~lines:(fun s -> s.Git_data.staged_lines)
                   ~side:`Staged
                   ~stage:noop
                   ~unstage:data.unstage_path
@@ -79,6 +113,7 @@ let layout_tree ~(data : Git_data.t) ~discard ~commit ~copy_path =
               , files_pane
                   ~id:"changes"
                   ~title:"Changes"
+                  ~lines:(fun s -> s.Git_data.unstaged_lines)
                   ~side:`Unstaged
                   ~stage:data.stage_path
                   ~unstage:noop

@@ -32,14 +32,11 @@ end
 
 module Model = struct
   type t =
-    { selection : string option (* row KEY; stable under reorder *)
-    ; scroll : int
+    { listing : Listing.Model.t
     ; overrides : bool String.Map.t (* row key -> collapsed, user-toggled *)
-    ; keys : string list (* visible rows' keys at the last transition *)
     }
 
-  let initial =
-    { selection = None; scroll = 0; overrides = String.Map.empty; keys = [] }
+  let initial = { listing = Listing.Model.initial; overrides = String.Map.empty }
 end
 
 module Action = struct
@@ -63,22 +60,6 @@ module Action = struct
     | Rows_changed (* the derived rows changed: repair the selection *)
   [@@deriving sexp_of]
 end
-
-let wheel_step = 3
-
-let offset ~total ~height scroll =
-  Int.max 0 (Int.min scroll (total - Int.max 1 height))
-;;
-
-let reveal ~height ~cursor scroll =
-  if height <= 0
-  then scroll
-  else if cursor < scroll
-  then cursor
-  else if cursor >= scroll + height
-  then cursor - height + 1
-  else scroll
-;;
 
 (* ---- tree building ----------------------------------------------------- *)
 
@@ -211,97 +192,57 @@ let visible ~(branches : Git.Branch_stack.Branch.t list) ~overrides : Row.t list
   List.rev (List.fold roots ~init:[] ~f:(fun acc r -> walk r ~depth:0 ~in_subtree:false acc))
 ;;
 
-let clamp rows c = Int.clamp_exn c ~min:0 ~max:(Int.max 0 (List.length rows - 1))
-
-(* The visible parent of visible row [i]: the nearest EARLIER visible row
-   one depth shallower (the tree grows down). *)
-let parent_index (rows : Row.t list) i =
-  match List.nth rows i with
-  | None -> None
-  | Some row ->
-    List.filter_mapi rows ~f:(fun j (r : Row.t) ->
-      Option.some_if (j < i && r.depth = row.depth - 1) j)
-    |> List.last
-;;
-
-(* The selection's position in the current rows; a missing/unset key reads
-   as the first row. *)
-let index_of (rows : Row.t list) selection =
-  match selection with
-  | None -> 0
-  | Some key ->
-    List.findi rows ~f:(fun _ (r : Row.t) -> String.equal r.key key)
-    |> Option.value_map ~default:0 ~f:fst
-;;
+let row_key (r : Row.t) = r.key
+let selection_key (model : Model.t) = model.listing.selection
+let scroll (model : Model.t) = model.listing.scroll
+let index_of rows selection = Listing.index_of ~key:row_key rows selection
 
 let apply_action ~branches (model : Model.t) (action : Action.t) =
   let rows overrides = visible ~branches ~overrides in
   let current = rows model.overrides in
   if List.is_empty current
-  then { model with Model.selection = None; scroll = 0; keys = [] }
+  then { model with Model.listing = Listing.empty }
   else (
-    let keys_of rows = List.map rows ~f:(fun (r : Row.t) -> r.key) in
-    (* Finish: re-derive rows under the (possibly changed) overrides,
-       select by index, snapshot keys, reveal. *)
-    let finish ?height ~overrides ~index (model : Model.t) =
-      let rows = rows overrides in
-      let index = clamp rows index in
-      let selection = List.nth rows index |> Option.map ~f:(fun (r : Row.t) -> r.key) in
-      let scroll =
-        match height with
-        | None -> offset ~total:(List.length rows) ~height:1 model.scroll
-        | Some height -> reveal ~height ~cursor:index model.scroll
-      in
-      { Model.selection; overrides; scroll; keys = keys_of rows }
+    let index = index_of current model.listing.selection in
+    (* Select by index under (possibly changed) fold overrides. *)
+    let select ?height ~overrides index =
+      { Model.overrides
+      ; listing = Listing.select ~key:row_key (rows overrides) ?height ~index model.listing
+      }
     in
-    let index = index_of current model.selection in
     match action with
     | Action.Wheel { dir; height } ->
-      let limit = Int.max 0 (List.length current - Int.max 1 height) in
-      let scroll =
-        Int.clamp_exn
-          (offset ~total:(List.length current) ~height:1 model.scroll + (wheel_step * dir))
-          ~min:0
-          ~max:limit
-      in
-      { model with Model.scroll = scroll; keys = keys_of current }
-    | Move { dir = `Up; height } ->
-      finish ~height ~overrides:model.overrides ~index:(index - 1) model
-    | Move { dir = `Down; height } ->
-      finish ~height ~overrides:model.overrides ~index:(index + 1) model
+      { model with
+        Model.listing =
+          Listing.wheel model.listing ~total:(List.length current) ~height ~dir
+      }
+    | Move { dir = `Up; height } -> select ~height ~overrides:model.overrides (index - 1)
+    | Move { dir = `Down; height } -> select ~height ~overrides:model.overrides (index + 1)
     | Activate { row; height } ->
-      let row = clamp current row in
+      let row = Int.clamp_exn row ~min:0 ~max:(List.length current - 1) in
       let r = List.nth_exn current row in
       if r.has_children
       then (
         let overrides = Map.set model.overrides ~key:r.key ~data:(not r.collapsed) in
-        finish ~height ~overrides ~index:(index_of (rows overrides) (Some r.key)) model)
-      else finish ~height ~overrides:model.overrides ~index:row model
+        select ~height ~overrides (index_of (rows overrides) (Some r.key)))
+      else select ~height ~overrides:model.overrides row
     | Fold { height } ->
       let r = List.nth_exn current index in
       if r.has_children && not r.collapsed
       then (
         let overrides = Map.set model.overrides ~key:r.key ~data:true in
-        finish ~height ~overrides ~index:(index_of (rows overrides) (Some r.key)) model)
+        select ~height ~overrides (index_of (rows overrides) (Some r.key)))
       else (
-        match parent_index current index with
-        | Some i -> finish ~height ~overrides:model.overrides ~index:i model
+        match Listing.parent_index ~depth:(fun (r : Row.t) -> r.depth) current index with
+        | Some i -> select ~height ~overrides:model.overrides i
         | None -> model)
     | Unfold { height } ->
       let r = List.nth_exn current index in
       if r.has_children && r.collapsed
       then (
         let overrides = Map.set model.overrides ~key:r.key ~data:false in
-        finish ~height ~overrides ~index:(index_of (rows overrides) (Some r.key)) model)
+        select ~height ~overrides (index_of (rows overrides) (Some r.key)))
       else model
     | Rows_changed ->
-      let new_keys = keys_of current in
-      let selection =
-        Selection.repair ~old_keys:model.keys ~selection:model.selection ~new_keys
-      in
-      { model with
-        Model.selection
-      ; keys = new_keys
-      ; scroll = offset ~total:(List.length current) ~height:1 model.scroll
-      })
+      { model with Model.listing = Listing.rows_changed ~key:row_key current model.listing })
 ;;

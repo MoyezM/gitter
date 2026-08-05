@@ -47,7 +47,7 @@ let component ~status : Widget.t =
     let%arr inject and branches and model and dimensions in
     let height = dimensions.height in
     let rows = State.visible ~branches ~overrides:model.overrides in
-    let offset = State.offset ~total:(List.length rows) ~height model.scroll in
+    let offset = Listing.offset ~total:(List.length rows) ~height (State.scroll model) in
     fun (event : Event.t) ->
       match event with
       | Event.Key_press { key = ASCII 'j'; mods = [] }

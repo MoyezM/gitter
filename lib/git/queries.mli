@@ -35,3 +35,9 @@ val refs_signature : unit -> string Deferred.t
     base + recent reflog tips) — see [Branch_stack]. [] when the repo has no
     branches. *)
 val stack : unit -> Branch_stack.Branch.t list Or_error.t Deferred.t
+
+(** Per-file (added, removed) line counts, (staged, unstaged) — from
+    numstat; binary files skipped, untracked files not counted. *)
+val diffstat
+  :  unit
+  -> ((int * int) String.Map.t * (int * int) String.Map.t) Or_error.t Deferred.t

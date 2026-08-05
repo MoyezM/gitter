@@ -28,6 +28,15 @@ let entries_of_load (load : Load.t) =
   | Not_loaded | Loading | Loaded (Error _) -> []
 ;;
 
+(* Per-file +/- line counts per side; the panes sum them for the title
+   bars and show them per row. *)
+type diffstat =
+  { staged_lines : (int * int) String.Map.t
+  ; unstaged_lines : (int * int) String.Map.t
+  }
+
+let no_diffstat = { staged_lines = String.Map.empty; unstaged_lines = String.Map.empty }
+
 (* One section pane's slice: its visible rows, cursor, scroll override,
    and inject. *)
 type section_data =
@@ -61,6 +70,7 @@ type t =
       (* the last failed mutation's message; cleared by the next success *)
   ; stack : Git.Branch_stack.Branch.t list Or_error.t Bonsai.t
       (* the inferred branch stack; Ok [] until first load / no branches *)
+  ; diffstat : diffstat Bonsai.t
   }
 
 let create (local_ graph) =
@@ -76,18 +86,31 @@ let create (local_ graph) =
      intermediate state transition: a refresh keeps SHOWING the old entries
      until the new ones land — flashing "loading" on every stage/unstage
      reads as whole-screen flicker. *)
+  let diffstat, set_diffstat = Bonsai.state no_diffstat graph in
   let fetch_now =
-    let%arr set_load in
+    let%arr set_load and set_diffstat in
     let%bind.Effect mine =
       Effect.of_thunk (fun () ->
         incr generation;
         poll_signature := None;
         !generation)
     in
-    let%bind.Effect result = Effect.of_deferred_thunk (fun () -> Git.Queries.status ()) in
+    let%bind.Effect result, stat =
+      Effect.of_deferred_thunk (fun () ->
+        let open Async in
+        Deferred.both (Git.Queries.status ()) (Git.Queries.diffstat ()))
+    in
     let%bind.Effect current = Effect.of_thunk (fun () -> !generation) in
     if current = mine
-    then set_load (Loaded (Or_error.map result ~f:(fun (_raw, entries, branch) -> entries, branch)))
+    then
+      Effect.Many
+        [ set_load
+            (Loaded (Or_error.map result ~f:(fun (_raw, entries, branch) -> entries, branch)))
+        ; set_diffstat
+            (match stat with
+             | Ok (staged_lines, unstaged_lines) -> { staged_lines; unstaged_lines }
+             | Error (_ : Error.t) -> no_diffstat)
+        ]
     else Effect.Ignore
   in
   (* The inferred branch stack: same generation-guard shape as fetch_now,
@@ -154,11 +177,11 @@ let create (local_ graph) =
       graph;
     let cursor =
       let%arr rows and model in
-      Panes.Files.State.index_of rows model.selection
+      Panes.Files.State.index_of rows (Panes.Files.State.selection_key model)
     in
     let scroll =
       let%arr model in
-      model.Panes.Files.State.Model.scroll
+      Panes.Files.State.scroll model
     in
     let inject =
       let%arr inject and set_active in
@@ -333,5 +356,6 @@ let create (local_ graph) =
   ; branch
   ; notice
   ; stack
+  ; diffstat
   }
 ;;

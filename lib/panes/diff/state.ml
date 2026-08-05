@@ -28,19 +28,16 @@ let pan_step = 4
 (* The view keeps the cursor this many rows from its edges when following. *)
 let scrolloff = 5
 
-(* Helix's scroll-lines default, flat — no acceleration here. Helix has none
-   either: trackpad velocity reaches us as event RATE (the terminal converts
-   pixel deltas into proportionally many wheel events), so a flat per-event
-   step already scrolls faster when you flick faster. Adding our own boost
-   on top double-accelerates and feels jumpy. *)
-let wheel_step = 3
+(* Flat wheel step, shared with the listings (see Listing.wheel_step for
+   the no-acceleration rationale). *)
+let wheel_step = Listing.wheel_step
 
 let clamp_row (doc : Document.t) i =
   Int.clamp_exn i ~min:0 ~max:(Int.max 0 (Array.length doc - 1))
 ;;
 
 let clamp_scroll (doc : Document.t) ~height scroll =
-  Int.clamp_exn scroll ~min:0 ~max:(Int.max 0 (Array.length doc - height))
+  Listing.offset ~total:(Array.length doc) ~height scroll
 ;;
 
 (* The diff row nearest [i], preferring direction [dir]; falls back to the
@@ -72,14 +69,10 @@ let snap (doc : Document.t) ~dir i =
    leave the cursor off-screen, and motions/staging still act on it. *)
 let effective_cursor (doc : Document.t) (model : Model.t) = snap doc ~dir:1 model.cursor
 
-(* Scroll so the cursor sits within the margin of neither edge. The margin
-   shrinks below [scrolloff] on tiny panes — at full scrolloff a pane under
-   11 rows would invert the bounds and pin the cursor off-screen. *)
+(* View-follows-cursor with the scrolloff margin (Listing shrinks it on
+   tiny panes so the bounds can't invert). *)
 let follow (doc : Document.t) ~height ~cursor scroll =
-  let margin = Int.min scrolloff (Int.max 0 ((height - 1) / 2)) in
-  let lo = cursor - (height - 1 - margin) in
-  let hi = cursor - margin in
-  scroll |> Int.max lo |> Int.min hi |> clamp_scroll doc ~height
+  Listing.reveal ~margin:scrolloff ~total:(Array.length doc) ~height ~cursor scroll
 ;;
 
 let move doc (model : Model.t) ~height ~by =

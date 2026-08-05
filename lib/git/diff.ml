@@ -112,3 +112,39 @@ let parse output : File.t list =
   let ~leading:_junk, ~runs = split_runs ~marker:"diff --git" (String.split_lines output) in
   List.map runs ~f:file_of_run
 ;;
+
+(* ---- numstat ----------------------------------------------------------- *)
+
+(* The numstat path field spells renames "old => new", with a brace form
+   when the sides share affixes: "pre{old => new}post". Resolve to the NEW
+   path — the one status reports and the panes key on. *)
+let numstat_path field =
+  match String.substr_index field ~pattern:" => " with
+  | None -> field
+  | Some arrow ->
+    (match String.lsplit2 field ~on:'{' with
+     | Some (pre, rest) ->
+       (match String.lsplit2 rest ~on:'}' with
+        | Some (inside, post) ->
+          let after =
+            match String.substr_index inside ~pattern:" => " with
+            | Some i -> String.drop_prefix inside (i + 4)
+            | None -> inside
+          in
+          pre ^ after ^ post
+        | None -> String.drop_prefix field (arrow + 4))
+     | None -> String.drop_prefix field (arrow + 4))
+;;
+
+(* "added<TAB>removed<TAB>path" lines; binary files print "-" and are
+   dropped. Total: garbage lines are skipped, never raised. *)
+let numstat output =
+  String.split_lines output
+  |> List.filter_map ~f:(fun line ->
+    match String.split line ~on:'\t' with
+    | [ added; removed; path ] ->
+      (match Int.of_string_opt added, Int.of_string_opt removed with
+       | Some a, Some d -> Some (numstat_path path, (a, d))
+       | _ -> None)
+    | _ -> None)
+;;

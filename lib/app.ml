@@ -85,8 +85,8 @@ let layout_tree ~(data : Git_data.t) ~discard ~commit =
       ])
 ;;
 
-let commands ~(layout : Layout.Component.Controls.t Bonsai.t) ~refresh =
-  let%arr layout and refresh in
+let commands ~(layout : Layout.Component.Controls.t Bonsai.t) ~refresh ~commit =
+  let%arr layout and refresh and commit in
   [ Menu.Commands.Group
       { key = 'w'
       ; label = "window"
@@ -98,9 +98,21 @@ let commands ~(layout : Layout.Component.Controls.t Bonsai.t) ~refresh =
   ; Menu.Commands.Group
       { key = 'g'
       ; label = "git"
-      ; children = [ Action { key = 'r'; label = "reload status"; effect = refresh } ]
+      ; children =
+          [ Action { key = 'r'; label = "reload status"; effect = refresh }
+          ; Action { key = 'c'; label = "commit"; effect = commit }
+          ]
       }
   ]
+;;
+
+(* Context hints for the status bar: the focused pane's keys. *)
+let hints ~focused =
+  match focused with
+  | "staged" -> "j/k:move  h/l:fold  u:unstage  c:commit  Space:menu  Tab:pane"
+  | "changes" -> "j/k:move  h/l:fold  s:stage  d:discard  c:commit  Space:menu  Tab:pane"
+  | "diff" -> "j/k:move  n/p:page  h/l:pan  s/u:±hunk  Space:menu  Tab:pane"
+  | _ -> "Space:menu  Tab:focus  Ctrl-C:quit"
 ;;
 
 let app ~(dimensions : Dimensions.t Bonsai.t) (local_ graph)
@@ -139,19 +151,19 @@ let app ~(dimensions : Dimensions.t Bonsai.t) (local_ graph)
   in
   let with_menu =
     Menu.Component.component
-      ~commands:(commands ~layout:controls ~refresh:data.refresh)
+      ~commands:(commands ~layout:controls ~refresh:data.refresh ~commit)
       screen
   in
   (* Modal outermost: while one is open, Space must not open the menu. *)
   let with_modal = Modal.Component.component ~model:modal_model ~inject:inject_modal with_menu in
   let ~view:screen_view, ~handler = with_modal ~dimensions:screen_dimensions graph in
   let view =
-    let%arr screen_view and dimensions in
+    let%arr screen_view and dimensions and layout_model in
     View.vcat
       [ screen_view
       ; Status_bar.render
           ~left:" gitter "
-          ~right:"Space:menu  Tab:focus  Ctrl-C:quit "
+          ~right:(hints ~focused:layout_model.Layout.State.Model.focused ^ " ")
           ~width:dimensions.width
       ]
   in

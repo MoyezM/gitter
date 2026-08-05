@@ -34,7 +34,8 @@ by libvterm per the app's negotiated modes).
    them (plus `async bonsai_term` libraries) to `test/dune`.
 5. Wire the feature: `Term_pane.Component.create/controls/wrap` in
    `app.ml` (see git history), keybinding + status-bar hints.
-6. Restore the frame-loop wakeup: switch `bin/main.ml` from plain
+6. Restore the frame-loop wakeup: move `wake.ml`/`wake.mli` (archived in
+   this directory) back to `lib/`, switch `bin/main.ml` from plain
    `Bonsai_term.start` back to `start_with_driver` and install
    `Gitter.Wake.set (fun () -> Driver.send_incoming_event driver ())`
    (see git history). CAUTION: `start_with_driver` does not add Ctrl-C

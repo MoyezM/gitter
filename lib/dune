@@ -9,7 +9,7 @@
 (library
  (name gitter)
  (libraries async bonsai bonsai_term bonsai_term_components.border_box
-   bonsai_term_components.ansi_text_renderer core grammar_registry
-   patdiff.ansi_text tree-sitter tree-sitter.json tree-sitter.ocaml)
+   core grammar_registry
+   tree-sitter tree-sitter.json tree-sitter.ocaml)
  (preprocess
   (pps ppx_jane bonsai.ppx_bonsai)))

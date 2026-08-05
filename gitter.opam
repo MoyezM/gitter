@@ -20,7 +20,6 @@ depends: [
   "bonsai_term"
   "bonsai_term_components"
   "ppx_jane"
-  "patdiff"
   "tree-sitter"
 ]
 build: [

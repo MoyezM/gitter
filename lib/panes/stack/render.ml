@@ -15,7 +15,7 @@ type status =
   | `Stack of Git.Branch_stack.Branch.t list
   ]
 
-let row ~width ~selected (r : State.Row.t) =
+let row ~width ~base ~selected (r : State.Row.t) =
   let with_sel attrs = if selected then Theme.selection_bg :: attrs else attrs in
   let fold =
     if r.has_children then (if r.collapsed then "\u{25B8} " else "\u{25BE} ") else "  "
@@ -37,6 +37,11 @@ let row ~width ~selected (r : State.Row.t) =
       let restack =
         if b.needs_restack && r.on_current_stack then " (needs restack)" else ""
       in
+      let restack =
+        match base with
+        | Some base when String.equal base b.name -> " (base)" ^ restack
+        | _ -> restack
+      in
       marker, b.name, attrs, restack
   in
   let marker_cells = if String.is_empty marker then 0 else 2 in
@@ -54,7 +59,7 @@ let row ~width ~selected (r : State.Row.t) =
     ]
 ;;
 
-let render ~(status : status) ~(model : State.Model.t) ~(dimensions : Dimensions.t) =
+let render ~(status : status) ~(model : State.Model.t) ~base ~(dimensions : Dimensions.t) =
   match status with
   | `Loading -> seg Theme.context " loading branches..."
   | `Error e -> seg Theme.untracked (" git error: " ^ Error.to_string_hum e)
@@ -66,5 +71,5 @@ let render ~(status : status) ~(model : State.Model.t) ~(dimensions : Dimensions
       ~scroll:(State.scroll model)
       ~cursor:(State.index_of rows (State.selection_key model))
       ~dimensions
-      ~row:(fun ~selected ~width r -> row ~width ~selected r)
+      ~row:(fun ~selected ~width r -> row ~width ~base ~selected r)
 ;;

@@ -54,8 +54,12 @@ type t =
   ; committed : section_data
   ; committed_counts : (int * int) String.Map.t Bonsai.t
   ; base : string option Bonsai.t
-      (* the committed view's base branch (the current branch's inferred
-         parent for now; settable from the stack pane later) *)
+      (* the committed view's base branch: the Enter-chosen override when
+         that branch still exists, else the current branch's inferred
+         parent *)
+  ; set_base : (string -> unit Effect.t) Bonsai.t
+      (* the stack pane's Enter — choosing the current branch clears back
+         to the inferred parent *)
   ; selection : Panes.Diff.Fetch.key option Bonsai.t
       (* the active pane's file, tagged with its side — the diff pane shows
          index-vs-HEAD for Staged, worktree-vs-index for Unstaged, and
@@ -138,11 +142,24 @@ let create (local_ graph) =
   (* The committed view: this branch vs its inferred base (the stack's
      parent of current). Entries + per-file counts land together; a base
      change refetches via the on_change below. *)
+  let base_override, set_base_override = Bonsai.state None graph in
   let base =
-    let%arr stack in
-    match stack with
-    | Ok branches -> Git.Branch_stack.parent_of_current branches
-    | Error (_ : Error.t) -> None
+    let%arr stack and base_override in
+    let branches =
+      match stack with
+      | Ok branches -> branches
+      | Error (_ : Error.t) -> []
+    in
+    match base_override with
+    | Some b
+      when List.exists branches ~f:(fun (br : Git.Branch_stack.Branch.t) ->
+             String.equal br.name b && not br.is_current) -> Some b
+    | Some _ (* the chosen branch vanished or became current: fall back *)
+    | None -> Git.Branch_stack.parent_of_current branches
+  in
+  let set_base =
+    let%arr set_base_override in
+    fun branch -> set_base_override (Some branch)
   in
   let committed_state, set_committed = Bonsai.state ([], String.Map.empty) graph in
   let committed_generation = ref 0 in
@@ -425,5 +442,6 @@ let create (local_ graph) =
   ; committed
   ; committed_counts
   ; base
+  ; set_base
   }
 ;;

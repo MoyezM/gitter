@@ -156,7 +156,10 @@ let layout_tree ~(data : Git_data.t) ~discard ~commit ~copy_path =
               , leaf
                   ~id:"stack"
                   ~title:(Bonsai.return "Stack")
-                  (Panes.Stack.Component.component ~status:stack_status) )
+                  (Panes.Stack.Component.component
+                     ~status:stack_status
+                     ~base:data.base
+                     ~set_base:data.set_base) )
             ] )
       ; ( 2.
         , leaf
@@ -201,7 +204,7 @@ let hints ~focused =
   | "staged" -> "j/k:move  u:unstage  c:commit  y:copy path  Space:menu  Tab:pane"
   | "changes" -> "j/k:move  s:stage  d:discard  c:commit  y:copy path  Tab:pane"
   | "diff" -> "j/k:move  n/p:page  h/l:pan  s/u:\u{00B1}hunk  y:copy path"
-  | "stack" -> "j/k:move  h/l:fold  Space:menu  Tab:pane"
+  | "stack" -> "j/k:move  h/l:fold  Enter:set base  Space:menu  Tab:pane"
   | _ -> "Space:menu  Tab:focus  Ctrl-C:quit"
 ;;
 

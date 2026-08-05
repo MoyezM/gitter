@@ -7,7 +7,7 @@ open Bonsai.Let_syntax
    selection yet — set-as-base arrives with relative mode). All mutations
    go through the machine; the wheel scrolls without moving the cursor. *)
 
-let component ~status : Widget.t =
+let component ~status ~base ~set_base : Widget.t =
   fun ~dimensions (local_ graph) ->
   let branches =
     let%arr status in
@@ -40,16 +40,27 @@ let component ~status : Widget.t =
      |> List.map ~f:(fun (r : State.Row.t) -> r.key))
     graph;
   let view =
-    let%arr status and model and dimensions in
-    Render.render ~status ~model ~dimensions
+    let%arr status and model and base and dimensions in
+    Render.render ~status ~model ~base ~dimensions
   in
   let handler =
-    let%arr inject and branches and model and dimensions in
+    let%arr inject and branches and model and set_base and dimensions in
     let height = dimensions.height in
     let rows = State.visible ~branches ~overrides:model.overrides in
     let offset = Listing.offset ~total:(List.length rows) ~height (State.scroll model) in
     fun (event : Event.t) ->
       match event with
+      (* Enter sets the committed view's base — deliberately Enter-ONLY:
+         clicks navigate and fold, and a misclick must not silently swap
+         what the Committed pane diffs against. On a group row it toggles
+         the fold instead. *)
+      | Event.Key_press { key = Enter; mods = [] } ->
+        let index = State.index_of rows (State.selection_key model) in
+        (match List.nth rows index with
+         | Some { State.Row.kind = Branch b; _ } when not b.is_current -> set_base b.name
+         | Some ({ State.Row.kind = Group _; _ } as r) when r.has_children ->
+           inject (State.Action.Activate { row = index; height })
+         | Some _ | None -> Effect.Ignore)
       | Event.Key_press { key = ASCII 'j'; mods = [] }
       | Key_press { key = Arrow `Down; mods = [] } ->
         inject (State.Action.Move { dir = `Down; height })

@@ -10,4 +10,9 @@ type status =
   | `Stack of Git.Branch_stack.Branch.t list
   ]
 
-val render : status:status -> model:State.Model.t -> dimensions:Dimensions.t -> View.t
+val render
+  :  status:status
+  -> model:State.Model.t
+  -> base:string option (** marked "(base)" on its row *)
+  -> dimensions:Dimensions.t
+  -> View.t

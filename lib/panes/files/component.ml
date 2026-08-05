@@ -47,9 +47,8 @@ let component
       | None -> Effect.Ignore
     in
     fun (event : Event.t) ->
-      let offset =
-        State.offset ~total:(List.length rows) ~cursor ~height:dimensions.height scroll
-      in
+      let height = dimensions.height in
+      let offset = State.offset ~total:(List.length rows) ~height scroll in
       match event with
       | Event.Key_press { key = ASCII 's'; mods = [] } -> operate stage
       | Key_press { key = ASCII 'u'; mods = [] } -> operate unstage
@@ -57,18 +56,18 @@ let component
       | Key_press { key = ASCII 'c'; mods = [] } -> commit
       | Key_press { key = ASCII 'y'; mods = [] } -> operate copy_path
       | Key_press { key = ASCII 'j'; mods = [] }
-      | Key_press { key = Arrow `Down; mods = [] } -> inject (State.Action.Move `Down)
+      | Key_press { key = Arrow `Down; mods = [] } ->
+        inject (State.Action.Move { dir = `Down; height })
       | Key_press { key = ASCII 'k'; mods = [] }
-      | Key_press { key = Arrow `Up; mods = [] } -> inject (Move `Up)
+      | Key_press { key = Arrow `Up; mods = [] } -> inject (Move { dir = `Up; height })
       | Key_press { key = ASCII 'h'; mods = [] }
-      | Key_press { key = Arrow `Left; mods = [] } -> inject Collapse
+      | Key_press { key = Arrow `Left; mods = [] } -> inject (Collapse { height })
       | Key_press { key = ASCII 'l'; mods = [] }
       | Key_press { key = Arrow `Right; mods = [] } -> inject Expand
-      | Mouse { kind = Scroll `Down; _ } ->
-        inject (Wheel { dir = 1; height = dimensions.height })
-      | Mouse { kind = Scroll `Up; _ } ->
-        inject (Wheel { dir = -1; height = dimensions.height })
-      | Mouse { kind = Left; position; _ } -> inject (Activate (position.y + offset))
+      | Mouse { kind = Scroll `Down; _ } -> inject (Wheel { dir = 1; height })
+      | Mouse { kind = Scroll `Up; _ } -> inject (Wheel { dir = -1; height })
+      | Mouse { kind = Left; position; _ } ->
+        inject (Activate { row = position.y + offset; height })
       | _ -> Effect.Ignore
   in
   ~view, ~handler

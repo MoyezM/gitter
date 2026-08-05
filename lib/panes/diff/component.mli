@@ -6,9 +6,9 @@ open! Bonsai_term
     highlighted, with a helix-feel cursor (j/k/arrows, n/p and brackets for
     half-pages, click; the wheel scrolls the viewport without moving the
     cursor, which may end up off-screen). [s] stages / [u] unstages the
-    hunk under the cursor (side-appropriate only); [y] runs [copy_path] on
-    the selected file; [revision] bumps trigger a refetch after index
-    mutations. *)
+    hunk under the cursor (side-appropriate only); [y] runs [copy_path]
+    with "path:LINE" for the cursor's line (the jump format editors
+    accept); [revision] bumps trigger a refetch after index mutations. *)
 
 val component
   :  selection:Fetch.key option Bonsai.t

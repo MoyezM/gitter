@@ -4,24 +4,31 @@ module Model = struct
   type t =
     { cursor : int
     ; collapsed : String.Set.t
-    ; scroll : int option
-      (* Some = the wheel scrolled the viewport away from the cursor;
-         None = the viewport follows the cursor. Any cursor-moving action
-         clears it, which is what snaps the view back to the selection. *)
+    ; scroll : int (* first visible row; the wheel moves it freely *)
     }
 
-  let initial = { cursor = 0; collapsed = String.Set.empty; scroll = None }
+  let initial = { cursor = 0; collapsed = String.Set.empty; scroll = 0 }
 end
 
 module Action = struct
+  (* Cursor-moving actions carry the pane height so the transition can
+     reveal the cursor (the state machine lives in Git_data, which has no
+     dimensions — the pane handler does). *)
   type t =
-    | Move of [ `Up | `Down ]
-    | Activate of int (* click: move the cursor there; toggles directories *)
-    | Collapse (* left: fold the dir under the cursor, or jump to its parent *)
+    | Move of
+        { dir : [ `Up | `Down ]
+        ; height : int
+        }
+    | Activate of
+        { row : int (* absolute row index; click: toggles directories *)
+        ; height : int
+        }
+    | Collapse of { height : int }
+      (* left: fold the dir under the cursor, or jump to its parent *)
     | Expand (* right: unfold the dir under the cursor *)
     | Wheel of
         { dir : int (* +1 down, -1 up *)
-        ; height : int (* pane inner height at dispatch time *)
+        ; height : int
         }
   [@@deriving sexp_of]
 end
@@ -33,16 +40,23 @@ let clamp rows c = Int.clamp_exn c ~min:0 ~max:(Int.max 0 (List.length rows - 1)
    flicks. *)
 let wheel_step = 3
 
-(* The viewport when it follows the cursor: pinned so the cursor sits on
-   the last row once past the first page. *)
-let follow_offset ~cursor ~height = Int.max 0 (cursor - height + 1)
-
 (* One owner for the viewport mapping: render and the click handler must
    agree on it or clicks activate the wrong row. *)
-let offset ~total ~cursor ~height scroll =
-  match scroll with
-  | None -> follow_offset ~cursor ~height
-  | Some s -> Int.max 0 (Int.min s (total - Int.max 1 height))
+let offset ~total ~height scroll =
+  Int.max 0 (Int.min scroll (total - Int.max 1 height))
+;;
+
+(* Minimal-motion reveal: scroll only when the cursor left the viewport.
+   Clicking a visible row therefore never moves the view; keyboard motion
+   scrolls one row at a time at the edges. *)
+let reveal ~height ~cursor scroll =
+  if height <= 0
+  then scroll
+  else if cursor < scroll
+  then cursor
+  else if cursor >= scroll + height
+  then cursor - height + 1
+  else scroll
 ;;
 
 (* The nearest preceding row shallower than the cursor's — its enclosing
@@ -59,58 +73,57 @@ let parent rows ~cursor =
       |> List.last
 ;;
 
-(* The cursor/collapse transitions; every one of these represents the user
-   acting on the selection, so apply_action clears [scroll] around them. *)
-let step rows (model : Model.t) (action : Action.t) =
-  let cursor = model.Model.cursor in
-  match action with
-  | Action.Wheel _ -> model (* handled in apply_action *)
-  | Move `Up -> { model with Model.cursor = clamp rows (cursor - 1) }
-  | Move `Down -> { model with Model.cursor = clamp rows (cursor + 1) }
-  | Activate i ->
-    let cursor = clamp rows i in
-    (match List.nth_exn rows cursor with
-     | Tree.Dir { path; _ } ->
-       { model with
-         Model.cursor
-       ; collapsed =
-           (if Set.mem model.collapsed path
-            then Set.remove model.collapsed path
-            else Set.add model.collapsed path)
-       }
-     | File _ -> { model with Model.cursor = cursor })
-  | Expand ->
-    (match List.nth_exn rows cursor with
-     | Tree.Dir { path; expanded = false; _ } ->
-       { model with Model.collapsed = Set.remove model.collapsed path }
-     | Dir _ | File _ -> model)
-  | Collapse ->
-    (match List.nth_exn rows cursor with
-     | Tree.Dir { path; expanded = true; _ } ->
-       { model with Model.collapsed = Set.add model.collapsed path }
-     | Dir _ | File _ ->
-       (match parent rows ~cursor with
-        | Some i -> { model with Model.cursor = i }
-        | None -> model))
-;;
-
 let apply_action ~entries (model : Model.t) (action : Action.t) =
   let rows = Tree.rows ~entries ~collapsed:model.collapsed in
   if List.is_empty rows
-  then { model with Model.cursor = 0; scroll = None }
+  then { model with Model.cursor = 0; scroll = 0 }
   else (
     let cursor = clamp rows model.cursor in
-    let model = { model with Model.cursor = cursor } in
+    let scroll = offset ~total:(List.length rows) ~height:1 model.scroll in
+    let model = { model with Model.cursor = cursor; scroll } in
+    let follow ~height (model : Model.t) =
+      { model with Model.scroll = reveal ~height ~cursor:model.cursor model.scroll }
+    in
     match action with
     | Action.Wheel { dir; height } ->
-      (* Scroll the viewport only — the selection stays put (possibly
-         off-screen). *)
-      let base = offset ~total:(List.length rows) ~cursor ~height model.scroll in
+      (* Viewport only — the selection stays put, off-screen if need be. *)
       let limit = Int.max 0 (List.length rows - Int.max 1 height) in
       { model with
-        Model.scroll = Some (Int.clamp_exn (base + (wheel_step * dir)) ~min:0 ~max:limit)
+        Model.scroll = Int.clamp_exn (scroll + (wheel_step * dir)) ~min:0 ~max:limit
       }
-    | action -> { (step rows model action) with Model.scroll = None })
+    | Move { dir = `Up; height } ->
+      follow ~height { model with Model.cursor = clamp rows (cursor - 1) }
+    | Move { dir = `Down; height } ->
+      follow ~height { model with Model.cursor = clamp rows (cursor + 1) }
+    | Activate { row; height } ->
+      let cursor = clamp rows row in
+      follow
+        ~height
+        (match List.nth_exn rows cursor with
+         | Tree.Dir { path; _ } ->
+           { model with
+             Model.cursor
+           ; collapsed =
+               (if Set.mem model.collapsed path
+                then Set.remove model.collapsed path
+                else Set.add model.collapsed path)
+           }
+         | File _ -> { model with Model.cursor = cursor })
+    | Expand ->
+      (match List.nth_exn rows cursor with
+       | Tree.Dir { path; expanded = false; _ } ->
+         { model with Model.collapsed = Set.remove model.collapsed path }
+       | Dir _ | File _ -> model)
+    | Collapse { height } ->
+      follow
+        ~height
+        (match List.nth_exn rows cursor with
+         | Tree.Dir { path; expanded = true; _ } ->
+           { model with Model.collapsed = Set.add model.collapsed path }
+         | Dir _ | File _ ->
+           (match parent rows ~cursor with
+            | Some i -> { model with Model.cursor = i }
+            | None -> model)))
 ;;
 
 (* The file under the cursor, if any — a directory row selects nothing. *)

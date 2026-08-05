@@ -1,10 +1,11 @@
 open! Core
 open Async
 
-(* [start_with_driver] instead of [start]: the driver handle is what lets
-   background work (the embedded terminal's pty reader) wake the frame loop
-   via [Gitter.Wake] — see lib/wake.ml. Ctrl-C exit is re-implemented here
-   because plain [start] added it for us. *)
+(* [start_with_driver] instead of [start]: the driver handle lets
+   background producers wake the frame loop via [Gitter.Wake] — see
+   lib/wake.ml (the archived embedded terminal was its first user; kept
+   because any future background producer needs it). Ctrl-C exit is
+   re-implemented here because plain [start] added it for us. *)
 let run () =
   let%bind.Deferred.Or_error driver =
     Bonsai_term.start_with_driver

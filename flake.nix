@@ -39,8 +39,8 @@
             pkg-config
             gmp
             autoconf
-            # embedded-terminal emulator library (Vt backend)
-            libvterm-neovim
+            # (libvterm-neovim was here for the embedded terminal — re-add
+            # it when reviving lib/terminal, see lib/terminal/README.md)
             # scripts/add-grammar and the test harnesses
             curl
             git

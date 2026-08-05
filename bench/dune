@@ -1,0 +1,5 @@
+(executable
+ (name bench_diff)
+ (libraries async core core_unix.command_unix gitter gitter_grammar_c tree-sitter)
+ (preprocess
+  (pps ppx_jane)))

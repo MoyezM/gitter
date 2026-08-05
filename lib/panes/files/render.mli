@@ -17,7 +17,7 @@ val render
   :  status:status
   -> rows:Tree.row list
   -> cursor:int
-  -> scroll:int option (** the model's wheel-scroll override *)
+  -> scroll:int (** the model's viewport offset (render clamps it) *)
   -> side:[ `Staged | `Unstaged ] (** which side's status letter to show *)
   -> dimensions:Dimensions.t
   -> View.t

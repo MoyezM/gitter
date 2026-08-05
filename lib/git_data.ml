@@ -33,7 +33,7 @@ let entries_of_load (load : Load.t) =
 type section_data =
   { rows : Panes.Files.Tree.row list Bonsai.t
   ; cursor : int Bonsai.t
-  ; scroll : int option Bonsai.t
+  ; scroll : int Bonsai.t
   ; inject : (Panes.Files.State.Action.t -> unit Effect.t) Bonsai.t
   }
 
@@ -139,7 +139,7 @@ let create (local_ graph) =
         (* Wheel scrolling is a viewport motion, not a selection: it must
            not flip which pane's cursor feeds the diff. *)
         | Wheel _ -> inject action
-        | Move _ | Activate _ | Collapse | Expand ->
+        | Move _ | Activate _ | Collapse _ | Expand ->
           Effect.Many [ set_active which; inject action ]
     in
     let selection =

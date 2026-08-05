@@ -1,22 +1,15 @@
 (include_subdirs qualified)
 
+; terminal/ and term_pane/ are the ARCHIVED embedded-terminal component
+; (libvterm + forkpty; see terminal/README.md) — kept out of the build so
+; gitter no longer needs libvterm. Re-enable by removing them from this
+; exclusion and restoring the stanzas listed in the README.
+(dirs :standard \ terminal term_pane)
+
 (library
  (name gitter)
  (libraries async bonsai bonsai_term bonsai_term_components.border_box
    bonsai_term_components.ansi_text_renderer core grammar_registry
    patdiff.ansi_text tree-sitter tree-sitter.json tree-sitter.ocaml)
- (foreign_stubs
-  (language c)
-  (names pty_stubs vterm_stubs)
-  (flags
-   (:standard
-    (:include vterm_c_flags.sexp))))
- (c_library_flags
-  (:include vterm_c_library_flags.sexp))
  (preprocess
   (pps ppx_jane bonsai.ppx_bonsai)))
-
-(rule
- (targets vterm_c_flags.sexp vterm_c_library_flags.sexp)
- (action
-  (run %{exe:../config/discover.exe})))

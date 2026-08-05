@@ -74,7 +74,7 @@ let render ~(status : status) ~rows ~cursor ~scroll ~side ~(dimensions : Dimensi
   | `Empty message -> seg Theme.context (" " ^ message)
   | `Tree ->
     let height = dimensions.height in
-    let offset = State.offset ~total:(List.length rows) ~cursor ~height scroll in
+    let offset = State.offset ~total:(List.length rows) ~height scroll in
     let bar = Scrollbar.view ~total:(List.length rows) ~visible:height ~offset in
     let row_width = dimensions.width - if Option.is_some bar then 1 else 0 in
     let body =

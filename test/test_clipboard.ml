@@ -13,13 +13,3 @@ let () =
   check "empty" (String.equal (Clipboard.osc52 "") (osc ""));
   print_endline "All clipboard tests passed."
 ;;
-
-(* TEMP probe: exercise the native-tool path end to end. *)
-let () =
-  let open Async in
-  don't_wait_for
-    (let%bind result = Gitter.Clipboard.copy_via_tool "gitter-clip-probe" in
-     print_s [%sexp (result : unit Or_error.t)];
-     exit 0);
-  never_returns (Scheduler.go ())
-;;

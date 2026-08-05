@@ -119,7 +119,18 @@ let component
           hunk_op ~wanted_side:`Staged unstage_hunk
         | Key_press { key = ASCII 'y'; mods = [] } ->
           (match selection with
-           | Some (path, _) -> copy_path path
+           | Some (path, _) ->
+             (* path:LINE — the cursor row's worktree-side line number
+                (old side for deletions), the jump format editors accept. *)
+             let target =
+               match doc.(State.effective_cursor doc model) with
+               | Document.Diff_line (old_no, new_no, _) ->
+                 (match Option.first_some new_no old_no with
+                  | Some n -> sprintf "%s:%d" path n
+                  | None -> path)
+               | File_header _ | Hunk_header _ -> path
+             in
+             copy_path target
            | None -> Effect.Ignore)
         | Event.Key_press { key = ASCII 'j'; mods = [] }
         | Key_press { key = Arrow `Down; mods = [] } -> inject (State.Action.Move 1)

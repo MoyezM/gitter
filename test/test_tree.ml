@@ -91,21 +91,24 @@ let () =
 
 (* Actions: activate toggles dirs, collapse folds or jumps to parent,
    expand unfolds. Indices refer to the fully-expanded shape above. *)
+let activate row = State.Action.Activate { row; height = 10 }
+let collapse = State.Action.Collapse { height = 10 }
+
 let () =
-  let m = apply (State.Action.Activate 2) in
+  let m = apply (activate 2) in
   check "click a dir folds it" (Set.mem m.collapsed "bench" && m.cursor = 2);
-  let m2 = State.apply_action ~entries m (State.Action.Activate 2) in
+  let m2 = State.apply_action ~entries m (activate 2) in
   check "click again unfolds" (not (Set.mem m2.collapsed "bench"));
-  check "click a file just moves the cursor" (Set.is_empty (apply (State.Action.Activate 1)).collapsed);
-  let m = apply ~model:{ State.Model.initial with cursor = 7 } State.Action.Collapse in
+  check "click a file just moves the cursor" (Set.is_empty (apply (activate 1)).collapsed);
+  let m = apply ~model:{ State.Model.initial with cursor = 7 } collapse in
   check "collapse on a file jumps to its parent dir" (m.cursor = 6 && Set.is_empty m.collapsed);
-  let m = apply ~model:{ State.Model.initial with cursor = 6 } State.Action.Collapse in
+  let m = apply ~model:{ State.Model.initial with cursor = 6 } collapse in
   check "collapse folds the dir under the cursor" (Set.mem m.collapsed "lib/git");
   let m2 = State.apply_action ~entries m State.Action.Expand in
   check "expand unfolds it" (not (Set.mem m2.collapsed "lib/git"));
   check
     "top-level collapse is a no-op"
-    ((apply ~model:{ State.Model.initial with cursor = 0 } State.Action.Collapse).cursor = 0)
+    ((apply ~model:{ State.Model.initial with cursor = 0 } collapse).cursor = 0)
 ;;
 
 (* Selection: files select, dirs don't. *)
@@ -145,28 +148,31 @@ let () =
      staged e && not (unstaged e))
 ;;
 
-(* Wheel: scrolls the viewport without touching the cursor; any cursor
-   action clears the override, snapping the view back to the selection. *)
+(* Wheel: scrolls the viewport without touching the cursor; cursor motion
+   reveals the selection again with minimal scroll movement. *)
 let () =
   let m = apply (State.Action.Wheel { dir = 1; height = 3 }) in
-  check "wheel sets a scroll override" ([%equal: int option] m.scroll (Some 3));
+  check "wheel scrolls the viewport" (m.scroll = 3);
   check "wheel leaves the cursor put" (m.cursor = 0);
   let m2 = State.apply_action ~entries m (State.Action.Wheel { dir = 1; height = 3 }) in
-  check "wheel steps accumulate and clamp" ([%equal: int option] m2.scroll (Some 5));
-  let m3 = State.apply_action ~entries m2 (State.Action.Move `Down) in
-  check "cursor motion clears the override" (Option.is_none m3.scroll && m3.cursor = 1);
-  check "offset follows cursor without override" (State.offset ~total:8 ~cursor:5 ~height:3 None = 3);
-  check "offset uses the override when set" (State.offset ~total:8 ~cursor:0 ~height:3 (Some 4) = 4);
-  check "override clamps to the last page" (State.offset ~total:8 ~cursor:0 ~height:3 (Some 99) = 5)
+  check "wheel steps accumulate and clamp to the last page" (m2.scroll = 5);
+  let m3 = State.apply_action ~entries m2 (State.Action.Move { dir = `Down; height = 3 }) in
+  check "cursor motion reveals the selection" (m3.cursor = 1 && m3.scroll = 1);
+  let visible = State.apply_action ~entries { m with cursor = 4 } (State.Action.Move { dir = `Down; height = 3 }) in
+  check "motion inside the viewport does not scroll" (visible.cursor = 5 && visible.scroll = 3);
+  let clicked = State.apply_action ~entries m (State.Action.Activate { row = 4; height = 3 }) in
+  check "clicking a visible row keeps the viewport" (clicked.cursor = 4 && clicked.scroll = 3);
+  check "offset clamps to the last page" (State.offset ~total:8 ~height:3 99 = 5);
+  check "offset floors at zero" (State.offset ~total:8 ~height:3 (-2) = 0)
 ;;
 
 (* Total on empty data. *)
 let () =
   List.iter
-    [ State.Action.Move `Up
-    ; Move `Down
-    ; Activate 0
-    ; Collapse
+    [ State.Action.Move { dir = `Up; height = 10 }
+    ; Move { dir = `Down; height = 10 }
+    ; Activate { row = 0; height = 10 }
+    ; Collapse { height = 10 }
     ; Expand
     ; Wheel { dir = 1; height = 10 }
     ]

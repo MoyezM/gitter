@@ -19,7 +19,7 @@ val component
   :  status:Render.status Bonsai.t
   -> rows:Tree.row list Bonsai.t
   -> cursor:int Bonsai.t
-  -> scroll:int option Bonsai.t
+  -> scroll:int Bonsai.t
   -> side:[ `Staged | `Unstaged ]
   -> stage:(string -> unit Effect.t) Bonsai.t
   -> unstage:(string -> unit Effect.t) Bonsai.t

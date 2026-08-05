@@ -29,14 +29,52 @@ let component
     in
     doc, dimensions.height
   in
+  let machine_input =
+    let%arr doc_input and selection and result and stage_hunk and unstage_hunk and copy_path in
+    doc_input, selection, result, (stage_hunk, unstage_hunk, copy_path)
+  in
   let model, inject =
     Bonsai.state_machine_with_input
       ~default_model:State.Model.initial
-      ~apply_action:(fun _ctx input model action ->
+      ~apply_action:(fun ctx input model action ->
         match input with
         | Bonsai.Computation_status.Inactive -> model
-        | Active (doc, height) -> State.apply_action doc model action ~height)
-      doc_input
+        | Active ((doc, height), selection, result, (stage_hunk, unstage_hunk, copy_path))
+          ->
+          (match action with
+           | State.Action.Operate op ->
+             (* Effectful keys resolve against the CURRENT model — a
+                same-frame [j, s] burst stages the hunk j moved to. *)
+             let schedule e = Bonsai.Apply_action_context.schedule_event ctx e in
+             (match op, selection with
+              | `Copy_line, Some (path, _) ->
+                schedule (copy_path (State.yank_target doc model ~path))
+              | (`Stage_hunk | `Unstage_hunk), Some ((path, side) as key) ->
+                let wanted, run =
+                  match op with
+                  | `Stage_hunk -> `Unstaged, stage_hunk
+                  | `Unstage_hunk -> `Staged, unstage_hunk
+                  | `Copy_line -> assert false
+                in
+                (match result with
+                 | Some (rkey, Ok (payload : Fetch.payload))
+                   when [%equal: Fetch.key] key rkey
+                        && [%equal: Fetch.side] side (wanted :> Fetch.side) ->
+                   let cursor = State.effective_cursor doc model in
+                   (match Document.hunk_at doc ~row:cursor with
+                    | None -> ()
+                    | Some (fi, hi) ->
+                      (match
+                         Option.bind (List.nth payload.files fi) ~f:(fun f ->
+                           List.nth f.hunks hi)
+                       with
+                       | Some hunk -> schedule (run ~path ~raw:hunk.Git.Diff.Hunk.raw)
+                       | None -> ()))
+                 | _ -> ())
+              | _, None -> ());
+             model
+           | action -> State.apply_action doc model action ~height))
+      machine_input
       graph
   in
   (* Refetch when the selection changes AND when the revision bumps: an
@@ -89,67 +127,23 @@ let component
     Render.render ~content ~model ~dimensions
   in
   let handler =
-    let%arr doc_input
-    and inject
-    and model
-    and result
-    and selection
-    and stage_hunk
-    and unstage_hunk
-    and copy_path in
+    let%arr doc_input and inject and model in
     let doc, height = doc_input in
-    (* s/u apply the hunk enclosing the cursor to the index (the cursor may
-       be off-screen after wheel scrolling — the selection stays
-       authoritative); the raw hunk bytes come from the payload's parsed
-       files. Failure (index moved underneath) resyncs via the mutation's
-       refresh — silent. *)
-    let hunk_op ~wanted_side op =
-      match selection, result with
-      | Some ((path, side) as key), Some (rkey, Ok (payload : Fetch.payload))
-        when [%equal: Fetch.key] key rkey
-             && [%equal: Fetch.side] side (wanted_side :> Fetch.side) ->
-        let cursor = State.effective_cursor doc model in
-        (match Document.hunk_at doc ~row:cursor with
-         | None -> Effect.Ignore
-         | Some (fi, hi) ->
-           (match
-              Option.bind (List.nth payload.files fi) ~f:(fun f -> List.nth f.hunks hi)
-            with
-            | Some hunk -> op ~path ~raw:hunk.Git.Diff.Hunk.raw
-            | None -> Effect.Ignore))
-      | _ -> Effect.Ignore
-    in
     fun (event : Event.t) ->
       match event with
-      (* y works even when there is no document (binary diffs, messages):
-         it degrades to the plain path. *)
+      (* Effectful keys go through the machine — targets resolve at APPLY
+         time. y works even with no document (degrades to the path). *)
       | Event.Key_press { key = ASCII 'y'; mods = [] } ->
-        (match selection with
-         | Some (path, _) ->
-           (* path:LINE — the cursor row's worktree-side line number
-              (old side for deletions), the jump format editors accept. *)
-           let target =
-             if Array.is_empty doc
-             then path
-             else (
-               match doc.(State.effective_cursor doc model) with
-               | Document.Diff_line (old_no, new_no, _) ->
-                 (match Option.first_some new_no old_no with
-                  | Some n -> sprintf "%s:%d" path n
-                  | None -> path)
-               | File_header _ | Hunk_header _ -> path)
-           in
-           copy_path target
-         | None -> Effect.Ignore)
+        inject (State.Action.Operate `Copy_line)
       | event ->
         if Array.is_empty doc
         then Effect.Ignore
         else (
           match event with
           | Event.Key_press { key = ASCII 's'; mods = [] } ->
-            hunk_op ~wanted_side:`Unstaged stage_hunk
+            inject (State.Action.Operate `Stage_hunk)
           | Key_press { key = ASCII 'u'; mods = [] } ->
-            hunk_op ~wanted_side:`Staged unstage_hunk
+            inject (State.Action.Operate `Unstage_hunk)
           | Event.Key_press { key = ASCII 'j'; mods = [] }
         | Key_press { key = Arrow `Down; mods = [] } -> inject (State.Action.Move 1)
         | Key_press { key = ASCII 'k'; mods = [] }

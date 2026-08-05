@@ -3,5 +3,6 @@
  (public_name gitter)
  (libraries async bonsai bonsai_term core core_unix
    core_unix.command_unix gitter)
+ (link_flags (-cclib -Wl,-w)) ; silence SDK-version ld warning flood
  (preprocess
   (pps ppx_jane bonsai.ppx_bonsai)))

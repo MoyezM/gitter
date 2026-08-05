@@ -50,6 +50,9 @@ module Action : sig
         ; height : int
         }
     | Rows_changed (** the derived rows changed: repair the selection *)
+    | Enter of { height : int }
+        (** set-base on a branch row (host wrapper schedules it at apply
+            time); fold-toggle on a group row *)
   [@@deriving sexp_of]
 end
 

@@ -37,6 +37,9 @@ module Action : sig
         (** after a doc replacement under the same selection: re-snap the
             kept cursor into the new document and reveal it *)
     | Reset
+    | Operate of [ `Stage_hunk | `Unstage_hunk | `Copy_line ]
+        (** effectful keys, resolved at apply time by the component's
+            wrapper (burst-safe) *)
   [@@deriving sexp_of]
 end
 
@@ -55,3 +58,6 @@ val effective_cursor : Document.t -> Model.t -> int
 (** Scroll clamped for the current document and pane height; render clamps
     with exactly this before slicing. *)
 val clamp_scroll : Document.t -> height:int -> int -> int
+
+(** The y target: "path:LINE" for the cursor row, bare path without one. *)
+val yank_target : Document.t -> Model.t -> path:string -> string

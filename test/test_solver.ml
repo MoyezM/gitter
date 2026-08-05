@@ -50,15 +50,27 @@ let () =
   check "nested: vertical adjacency" (bottom.y = top.y + top.height)
 ;;
 
-(* Fraction overrides replace declared fractions; unknown paths are inert. *)
+(* Fraction overrides replace declared fractions, keyed by the split's
+   leftmost leaves so they survive pane hiding; unknown keys are inert. *)
 let () =
   let tree = Tree.node `Row [ 1., Tree.Leaf "a"; 1., Leaf "b" ] in
-  let overrides = String.Map.of_alist_exn [ "", 0.75 ] in
+  let overrides = String.Map.of_alist_exn [ "a|b", 0.75 ] in
   let solved = solve tree ~fractions:overrides ~rect:full in
   check "override applied" ((leaf_rect solved "a").width = 60);
-  let stale = String.Map.of_alist_exn [ "9/9", 0.9 ] in
+  let stale = String.Map.of_alist_exn [ "ghost|ghost", 0.9 ] in
   let solved = solve tree ~fractions:stale ~rect:full in
-  check "unknown-path override ignored" ((leaf_rect solved "a").width = 40)
+  check "unknown-key override ignored" ((leaf_rect solved "a").width = 40);
+  (* The point of content keys: the boundary between b and c keeps its
+     dragged fraction whether or not a is in the tree. *)
+  let three = Tree.node `Row [ 1., Tree.Leaf "a"; 1., Leaf "b"; 1., Leaf "c" ] in
+  let two = Tree.node `Row [ 1., Tree.Leaf "b"; 1., Leaf "c" ] in
+  let bc = String.Map.of_alist_exn [ "b|c", 0.9 ] in
+  let with_a = solve three ~fractions:bc ~rect:full in
+  let without_a = solve two ~fractions:bc ~rect:full in
+  check "b|c override applies in the full tree"
+    ((leaf_rect with_a "c").width < 20);
+  check "b|c override survives hiding a"
+    ((leaf_rect without_a "b").width = 72)
 ;;
 
 (* Minimums hold: an extreme weight cannot crush a sibling below min. *)

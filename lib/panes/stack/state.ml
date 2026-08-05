@@ -58,6 +58,9 @@ module Action = struct
         ; height : int
         }
     | Rows_changed (* the derived rows changed: repair the selection *)
+    | Enter of { height : int }
+      (* set the selected branch as the diff base (resolved at APPLY time
+         by the host wrapper — burst-safe); on a group row: toggle it *)
   [@@deriving sexp_of]
 end
 
@@ -197,7 +200,7 @@ let selection_key (model : Model.t) = model.listing.selection
 let scroll (model : Model.t) = model.listing.scroll
 let index_of rows selection = Listing.index_of ~key:row_key rows selection
 
-let apply_action ~branches (model : Model.t) (action : Action.t) =
+let rec apply_action ~branches (model : Model.t) (action : Action.t) =
   let rows overrides = visible ~branches ~overrides in
   let current = rows model.overrides in
   if List.is_empty current
@@ -244,5 +247,13 @@ let apply_action ~branches (model : Model.t) (action : Action.t) =
         select ~height ~overrides (index_of (rows overrides) (Some r.key)))
       else model
     | Rows_changed ->
-      { model with Model.listing = Listing.rows_changed ~key:row_key current model.listing })
+      { model with Model.listing = Listing.rows_changed ~key:row_key current model.listing }
+    | Enter { height } ->
+      (* Group rows fold-toggle; branch resolution happens in the host
+         wrapper, which re-dispatches here for the group case. *)
+      let r = List.nth_exn current index in
+      if r.has_children && (match r.kind with Row.Group _ -> true | Branch _ -> false)
+      then
+        apply_action ~branches model (Activate { row = index; height })
+      else model)
 ;;

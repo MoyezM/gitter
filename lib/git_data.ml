@@ -71,23 +71,36 @@ type t =
   ; revision : int Bonsai.t
       (* bumped by every index mutation and refresh: content changed even
          though the selection didn't — refetch the diff *)
-  ; stage_path : (string -> unit Effect.t) Bonsai.t
-  ; unstage_path : (string -> unit Effect.t) Bonsai.t
   ; stage_hunk : (path:string -> raw:string -> unit Effect.t) Bonsai.t
   ; unstage_hunk : (path:string -> raw:string -> unit Effect.t) Bonsai.t
-  ; discard_path : (string -> unit Effect.t) Bonsai.t
-      (* DESTRUCTIVE (worktree) — the app must gate it behind the confirm
-         modal; this is the raw operation *)
   ; commit : (string -> unit Effect.t) Bonsai.t
   ; branch : Git.Status.Branch.t option Bonsai.t
-  ; notice : string option Bonsai.t
-      (* the last failed mutation's message; cleared by the next success *)
   ; stack : Git.Branch_stack.Branch.t list Or_error.t Bonsai.t
       (* the inferred branch stack; Ok [] until first load / no branches *)
   ; diffstat : diffstat Bonsai.t
   }
 
-let create (local_ graph) =
+(* The effectful keys one section can run, resolved per row at apply
+   time. *)
+type ops =
+  { stage : string -> unit Effect.t
+  ; unstage : string -> unit Effect.t
+  ; discard : string -> unit Effect.t
+  ; copy_path : string -> unit Effect.t
+  ; toggle_review : string -> unit Effect.t
+  }
+
+(* [discard_confirm] wraps the worktree-destructive discard in the app's
+   confirm modal; [copy_path] is the app's clipboard effect (both live at
+   the app root: the modal and the tty are the app's). *)
+(* [set_notice] posts error notices to the app's status bar (the app owns
+   the notice state so it can also flash neutral info like "copied"). *)
+let create
+      ~(discard_confirm : (path:string -> discard:unit Effect.t -> unit Effect.t) Bonsai.t)
+      ~(copy_path : (string -> unit Effect.t) Bonsai.t)
+      ~(set_notice : (string option -> unit Effect.t) Bonsai.t)
+      (local_ graph)
+  =
   let load, set_load = Bonsai.state Load.Not_loaded graph in
   (* Fetch generation: refresh mid-flight starts a second fetch; only the
      NEWEST fetch may land, or a slow stale status overwrites a fresh one. *)
@@ -197,7 +210,6 @@ let create (local_ graph) =
        fun (_ : string option) -> fetch_committed)
     base
     graph;
-  let notice, set_notice = Bonsai.state None graph in
   (* Review marks, keyed by the content pair (old blob, new blob) — the
      spec's design: a mark survives restacks that don't touch the file and
      self-invalidates the moment either side's content changes (a stale
@@ -226,78 +238,53 @@ let create (local_ graph) =
     let%arr fetch_now and fetch_stack and fetch_committed in
     Effect.Many [ fetch_now; fetch_stack; fetch_committed ]
   in
-  (* Whichever pane acted last owns the selection. *)
-  let active, set_active = Bonsai.state `Unstaged graph in
-  let section ~which ~entries =
-    let model, inject =
-      Bonsai.state_machine_with_input
-        ~default_model:Panes.Files.State.Model.initial
-        ~apply_action:(fun _ctx input model action ->
-          let entries =
-            match input with
-            | Bonsai.Computation_status.Active entries -> entries
-            | Inactive -> []
-          in
-          Panes.Files.State.apply_action ~entries model action)
-        entries
-        graph
-    in
-    let rows =
-      let%arr entries and model in
-      Panes.Files.Tree.rows ~entries ~collapsed:model.collapsed
-    in
-    (* Selection is a key; the repair transition runs whenever the rows'
-       keys change (refresh, stage/unstage, external mutations). *)
-    Bonsai.Edge.on_change
-      ~equal:[%equal: string list]
-      ~callback:
-        (let%arr inject in
-         fun (_ : string list) -> inject Panes.Files.State.Action.Rows_changed)
-      (let%arr rows in
-       List.map rows ~f:Panes.Files.State.row_key)
-      graph;
-    let cursor =
-      let%arr rows and model in
-      Panes.Files.State.index_of rows (Panes.Files.State.selection_key model)
-    in
-    let scroll =
-      let%arr model in
-      Panes.Files.State.scroll model
-    in
-    let inject =
-      let%arr inject and set_active in
-      fun (action : Panes.Files.State.Action.t) ->
-        match action with
-        (* Wheel scrolling and background repairs are viewport/data
-           motions, not selections: they must not flip which pane's
-           cursor feeds the diff. *)
-        | Wheel _ | Rows_changed -> inject action
-        | Move _ | Activate _ | Collapse _ | Expand ->
-          Effect.Many [ set_active which; inject action ]
-    in
-    let selection =
-      let%arr rows and cursor in
-      Panes.Files.State.selection rows ~cursor
-    in
-    { rows; cursor; scroll; inject }, selection
+  let revision, bump_revision =
+    Bonsai.state_machine
+      ~default_model:0
+      ~apply_action:(fun _ctx revision () -> revision + 1)
+      graph
   in
-  let filtered filter =
-    let%arr load in
-    List.filter (entries_of_load load) ~f:filter
+  (* An index mutation, then resync: the status reloads and [revision] tells
+     the diff pane its content is stale. Failures surface in the status bar
+     (first line only) and clear on the next success; the refresh runs
+     either way — it IS the recovery. *)
+  let mutate =
+    let%arr refresh and bump_revision and set_notice in
+    fun op ->
+      let%bind.Effect result = Effect.of_deferred_thunk op in
+      let notice =
+        match result with
+        | Ok () -> None
+        | Error e ->
+          (match String.split_lines (Error.to_string_hum e) with
+           | first :: _ -> Some (String.prefix first 80)
+           | [] -> Some "git command failed")
+      in
+      Effect.Many [ set_notice notice; bump_revision (); refresh ]
   in
-  let staged, staged_selection =
-    section ~which:`Staged ~entries:(filtered Panes.Files.Sections.is_staged)
+  let stage_path =
+    let%arr mutate in
+    fun path -> mutate (fun () -> Git.Stage.stage_path path)
   in
-  let unstaged, unstaged_selection =
-    section ~which:`Unstaged ~entries:(filtered Panes.Files.Sections.is_unstaged)
+  let unstage_path =
+    let%arr mutate in
+    fun path -> mutate (fun () -> Git.Stage.unstage_path path)
   in
-  let committed, committed_selection =
-    section
-      ~which:`Committed
-      ~entries:
-        (let%arr committed_state in
-         let entries, _, _ = committed_state in
-         entries)
+  let stage_hunk =
+    let%arr mutate in
+    fun ~path ~raw -> mutate (fun () -> Git.Stage.stage_hunk ~path ~raw)
+  in
+  let unstage_hunk =
+    let%arr mutate in
+    fun ~path ~raw -> mutate (fun () -> Git.Stage.unstage_hunk ~path ~raw)
+  in
+  let discard_path =
+    let%arr mutate in
+    fun path -> mutate (fun () -> Git.Worktree.discard_path path)
+  in
+  let commit =
+    let%arr mutate in
+    fun message -> mutate (fun () -> Git.Commit.run ~message)
   in
   let committed_counts =
     let%arr committed_state in
@@ -384,6 +371,132 @@ let create (local_ graph) =
              | Error e -> set_notice (Some (String.prefix (Error.to_string_hum e) 80)))
           ]
   in
+  (* Whichever pane acted last owns the selection. *)
+  let active, set_active = Bonsai.state `Unstaged graph in
+  (* Per-section effectful-key handlers. They ride the state machine
+     INPUT so [Operate] resolves its target against the model at APPLY
+     time (burst-safe — see Panes.Files.State.Op); the wrapper schedules
+     the matching effect. *)
+  let noop_op (_ : string) = Effect.Ignore in
+  let noop_ops =
+    { stage = noop_op
+    ; unstage = noop_op
+    ; discard = noop_op
+    ; copy_path = noop_op
+    ; toggle_review = noop_op
+    }
+  in
+  let section ~which ~entries ~ops =
+    let input =
+      let%arr entries and ops in
+      entries, ops
+    in
+    let model, inject =
+      Bonsai.state_machine_with_input
+        ~default_model:Panes.Files.State.Model.initial
+        ~apply_action:(fun ctx input model action ->
+          let entries, ops =
+            match input with
+            | Bonsai.Computation_status.Active input -> input
+            | Inactive -> [], noop_ops
+          in
+          match action with
+          | Panes.Files.State.Action.Operate op ->
+            (match Panes.Files.State.target ~entries model with
+             | None -> ()
+             | Some path ->
+               let run =
+                 match op with
+                 | Panes.Files.State.Op.Stage -> ops.stage
+                 | Unstage -> ops.unstage
+                 | Discard -> ops.discard
+                 | Copy_path -> ops.copy_path
+                 | Toggle_review -> ops.toggle_review
+               in
+               Bonsai.Apply_action_context.schedule_event ctx (run path));
+            model
+          | action -> Panes.Files.State.apply_action ~entries model action)
+        input
+        graph
+    in
+    let rows =
+      let%arr entries and model in
+      Panes.Files.Tree.rows ~entries ~collapsed:model.collapsed
+    in
+    (* Selection is a key; the repair transition runs whenever the rows'
+       keys change (refresh, stage/unstage, external mutations). *)
+    Bonsai.Edge.on_change
+      ~equal:[%equal: string list]
+      ~callback:
+        (let%arr inject in
+         fun (_ : string list) -> inject Panes.Files.State.Action.Rows_changed)
+      (let%arr rows in
+       List.map rows ~f:Panes.Files.State.row_key)
+      graph;
+    let cursor =
+      let%arr rows and model in
+      Panes.Files.State.index_of rows (Panes.Files.State.selection_key model)
+    in
+    let scroll =
+      let%arr model in
+      Panes.Files.State.scroll model
+    in
+    let inject =
+      let%arr inject and set_active in
+      fun (action : Panes.Files.State.Action.t) ->
+        match action with
+        (* Wheel scrolling and background repairs are viewport/data
+           motions, not selections: they must not flip which pane's
+           cursor feeds the diff. *)
+        | Wheel _ | Rows_changed | Operate _ -> inject action
+        | Move _ | Activate _ | Collapse _ | Expand ->
+          Effect.Many [ set_active which; inject action ]
+    in
+    let selection =
+      let%arr rows and cursor in
+      Panes.Files.State.selection rows ~cursor
+    in
+    { rows; cursor; scroll; inject }, selection
+  in
+  let filtered filter =
+    let%arr load in
+    List.filter (entries_of_load load) ~f:filter
+  in
+  let staged, staged_selection =
+    section
+      ~which:`Staged
+      ~entries:(filtered Panes.Files.Sections.is_staged)
+      ~ops:
+        (let%arr unstage = unstage_path
+         and copy_path in
+         { noop_ops with unstage; copy_path })
+  in
+  let unstaged, unstaged_selection =
+    section
+      ~which:`Unstaged
+      ~entries:(filtered Panes.Files.Sections.is_unstaged)
+      ~ops:
+        (let%arr stage = stage_path
+         and discard_path
+         and discard_confirm
+         and copy_path in
+         { noop_ops with
+           stage
+         ; copy_path
+         ; discard = (fun path -> discard_confirm ~path ~discard:(discard_path path))
+         })
+  in
+  let committed, committed_selection =
+    section
+      ~which:`Committed
+      ~entries:
+        (let%arr committed_state in
+         let entries, _, _ = committed_state in
+         entries)
+      ~ops:
+        (let%arr copy_path and toggle_review in
+         { noop_ops with copy_path; toggle_review })
+  in
   let selection =
     let%arr active
     and staged_selection
@@ -396,54 +509,6 @@ let create (local_ graph) =
     | `Committed ->
       Option.both committed_selection base
       |> Option.map ~f:(fun (p, b) -> p, `Committed b)
-  in
-  let revision, bump_revision =
-    Bonsai.state_machine
-      ~default_model:0
-      ~apply_action:(fun _ctx revision () -> revision + 1)
-      graph
-  in
-  (* An index mutation, then resync: the status reloads and [revision] tells
-     the diff pane its content is stale. Failures surface in the status bar
-     (first line only) and clear on the next success; the refresh runs
-     either way — it IS the recovery. *)
-  let mutate =
-    let%arr refresh and bump_revision and set_notice in
-    fun op ->
-      let%bind.Effect result = Effect.of_deferred_thunk op in
-      let notice =
-        match result with
-        | Ok () -> None
-        | Error e ->
-          (match String.split_lines (Error.to_string_hum e) with
-           | first :: _ -> Some (String.prefix first 80)
-           | [] -> Some "git command failed")
-      in
-      Effect.Many [ set_notice notice; bump_revision (); refresh ]
-  in
-  let stage_path =
-    let%arr mutate in
-    fun path -> mutate (fun () -> Git.Stage.stage_path path)
-  in
-  let unstage_path =
-    let%arr mutate in
-    fun path -> mutate (fun () -> Git.Stage.unstage_path path)
-  in
-  let stage_hunk =
-    let%arr mutate in
-    fun ~path ~raw -> mutate (fun () -> Git.Stage.stage_hunk ~path ~raw)
-  in
-  let unstage_hunk =
-    let%arr mutate in
-    fun ~path ~raw -> mutate (fun () -> Git.Stage.unstage_hunk ~path ~raw)
-  in
-  let discard_path =
-    let%arr mutate in
-    fun path -> mutate (fun () -> Git.Worktree.discard_path path)
-  in
-  let commit =
-    let%arr mutate in
-    fun message -> mutate (fun () -> Git.Commit.run ~message)
   in
   let branch =
     let%arr load in
@@ -533,14 +598,10 @@ let create (local_ graph) =
   ; unstaged
   ; selection
   ; revision
-  ; stage_path
-  ; unstage_path
   ; stage_hunk
   ; unstage_hunk
-  ; discard_path
   ; commit
   ; branch
-  ; notice
   ; stack
   ; diffstat
   ; committed

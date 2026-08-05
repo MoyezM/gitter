@@ -8,6 +8,12 @@ open! Bonsai_term
 let seg attrs s = View.text ~attrs s
 
 let render ~left ~notice ~right ~width =
+  let notice_attrs =
+    match notice with
+    | Some ((_ : string), `Info) -> [ Attr.fg Theme.dim; Attr.bg Theme.surface ]
+    | Some (_, `Error) | None -> [ Attr.fg Theme.red; Attr.bg Theme.surface ]
+  in
+  let notice = Option.map notice ~f:fst in
   let notice =
     match notice with
     | None -> ""
@@ -19,7 +25,7 @@ let render ~left ~notice ~right ~width =
   then
     View.hcat
       [ seg Theme.status_bar left
-      ; seg [ Attr.fg Theme.red; Attr.bg Theme.surface ] notice
+      ; seg notice_attrs notice
       ; seg Theme.status_bar (String.make gap ' ')
       ; seg Theme.status_bar right
       ]

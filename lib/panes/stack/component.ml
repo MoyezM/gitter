@@ -15,17 +15,30 @@ let component ~status ~base ~set_base : Widget.t =
     | `Stack branches -> branches
     | `Loading | `Error _ | `Empty _ -> []
   in
+  let machine_input =
+    let%arr branches and set_base in
+    branches, set_base
+  in
   let model, inject =
     Bonsai.state_machine_with_input
       ~default_model:State.Model.initial
-      ~apply_action:(fun _ctx input model action ->
-        let branches =
+      ~apply_action:(fun ctx input model action ->
+        let branches, set_base =
           match input with
-          | Bonsai.Computation_status.Active branches -> branches
-          | Inactive -> []
+          | Bonsai.Computation_status.Active input -> input
+          | Inactive -> [], fun (_ : string) -> Effect.Ignore
         in
+        (match action with
+         | State.Action.Enter _ ->
+           (* Base-setting resolves against the CURRENT selection. *)
+           let rows = State.visible ~branches ~overrides:model.overrides in
+           (match List.nth rows (State.index_of rows (State.selection_key model)) with
+            | Some { State.Row.kind = Branch b; _ } when not b.is_current ->
+              Bonsai.Apply_action_context.schedule_event ctx (set_base b.name)
+            | Some _ | None -> ())
+         | _ -> ());
         State.apply_action ~branches model action)
-      branches
+      machine_input
       graph
   in
   (* Selection is a key; repair it whenever the visible rows' keys change
@@ -44,7 +57,7 @@ let component ~status ~base ~set_base : Widget.t =
     Render.render ~status ~model ~base ~dimensions
   in
   let handler =
-    let%arr inject and branches and model and set_base and dimensions in
+    let%arr inject and branches and model and dimensions in
     let height = dimensions.height in
     let rows = State.visible ~branches ~overrides:model.overrides in
     let offset = Listing.offset ~total:(List.length rows) ~height (State.scroll model) in
@@ -52,15 +65,10 @@ let component ~status ~base ~set_base : Widget.t =
       match event with
       (* Enter sets the committed view's base — deliberately Enter-ONLY:
          clicks navigate and fold, and a misclick must not silently swap
-         what the Committed pane diffs against. On a group row it toggles
-         the fold instead. *)
+         what the Committed pane diffs against. Routed through the machine
+         so the target resolves at APPLY time. *)
       | Event.Key_press { key = Enter; mods = [] } ->
-        let index = State.index_of rows (State.selection_key model) in
-        (match List.nth rows index with
-         | Some { State.Row.kind = Branch b; _ } when not b.is_current -> set_base b.name
-         | Some ({ State.Row.kind = Group _; _ } as r) when r.has_children ->
-           inject (State.Action.Activate { row = index; height })
-         | Some _ | None -> Effect.Ignore)
+        inject (State.Action.Enter { height })
       | Event.Key_press { key = ASCII 'j'; mods = [] }
       | Key_press { key = Arrow `Down; mods = [] } ->
         inject (State.Action.Move { dir = `Down; height })

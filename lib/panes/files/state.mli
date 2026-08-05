@@ -16,6 +16,19 @@ module Model : sig
   val initial : t
 end
 
+module Op : sig
+  (** The effectful keys, routed through the machine so targets resolve at
+      apply time (burst-safe) — the host's apply_action wrapper schedules
+      the effect. *)
+  type t =
+    | Stage
+    | Unstage
+    | Discard
+    | Copy_path
+    | Toggle_review
+  [@@deriving sexp_of]
+end
+
 module Action : sig
   (** Cursor-moving actions carry the pane height so the transition can
       reveal the selection. *)
@@ -35,6 +48,7 @@ module Action : sig
         ; height : int
         }
     | Rows_changed (** the derived rows changed: repair the selection *)
+    | Operate of Op.t (** handled by the host's apply_action wrapper *)
   [@@deriving sexp_of]
 end
 
@@ -55,3 +69,7 @@ val apply_action : entries:Git.Status.Entry.t list -> Model.t -> Action.t -> Mod
 
 (** The file at [cursor]; None on directory rows. *)
 val selection : Tree.row list -> cursor:int -> string option
+
+(** The operation target under the CURRENT selection (file path or dir
+    subtree path) — what the host's [Operate] wrapper acts on. *)
+val target : entries:Git.Status.Entry.t list -> Model.t -> string option

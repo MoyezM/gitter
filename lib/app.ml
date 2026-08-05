@@ -13,7 +13,7 @@ open Bonsai.Let_syntax
    Layout's state is created here so its control handle can feed the menu's
    command tree — the pattern every layer with commands will follow. *)
 
-let layout_tree ~(data : Git_data.t) ~discard ~commit ~copy_path =
+let layout_tree ~(data : Git_data.t) ~commit ~copy_path =
   let diff_title =
     let%arr selection = data.selection in
     match selection with
@@ -61,20 +61,8 @@ let layout_tree ~(data : Git_data.t) ~discard ~commit ~copy_path =
            ; View.text " "
            ])
   in
-  let noop = Bonsai.return (fun (_ : string) -> Effect.Ignore) in
   let no_reviews = Bonsai.return String.Set.empty in
-  let files_pane
-        ~id
-        ~title
-        ~title_right
-        ~status
-        ~counts
-        ~reviewed
-        ~toggle_review
-        ~side
-        ~stage
-        ~unstage
-        ~discard
+  let files_pane ~id ~title ~title_right ~status ~counts ~reviewed ~side
         (section : Git_data.section_data)
     =
     Layout.Component.Tree.leaf
@@ -89,12 +77,7 @@ let layout_tree ~(data : Git_data.t) ~discard ~commit ~copy_path =
          ~counts
          ~reviewed
          ~side
-         ~stage
-         ~unstage
-         ~discard
          ~commit
-         ~copy_path
-         ~toggle_review
          ~inject:section.inject)
   in
   (* The committed pane: this branch vs its base. *)
@@ -148,11 +131,7 @@ let layout_tree ~(data : Git_data.t) ~discard ~commit ~copy_path =
                   ~status:committed_status
                   ~counts:data.committed_counts
                   ~reviewed:data.reviewed
-                  ~toggle_review:data.toggle_review
                   ~side:`Committed
-                  ~stage:noop
-                  ~unstage:noop
-                  ~discard:noop
                   data.committed )
             ; ( 1.
               , files_pane
@@ -167,11 +146,7 @@ let layout_tree ~(data : Git_data.t) ~discard ~commit ~copy_path =
                     (let%arr stat = data.diffstat in
                      stat.Git_data.staged_lines)
                   ~reviewed:no_reviews
-                  ~toggle_review:noop
                   ~side:`Staged
-                  ~stage:noop
-                  ~unstage:data.unstage_path
-                  ~discard:noop (* staged entries don't discard *)
                   data.staged )
             ; ( 2.
               , files_pane
@@ -186,11 +161,7 @@ let layout_tree ~(data : Git_data.t) ~discard ~commit ~copy_path =
                     (let%arr stat = data.diffstat in
                      stat.Git_data.unstaged_lines)
                   ~reviewed:no_reviews
-                  ~toggle_review:noop
                   ~side:`Unstaged
-                  ~stage:data.stage_path
-                  ~unstage:noop
-                  ~discard
                   data.unstaged )
             ; ( 1.
               , leaf
@@ -267,18 +238,60 @@ let app ~(dimensions : Dimensions.t Bonsai.t) (local_ graph)
     ; width = dimensions.width
     }
   in
-  let data = Git_data.create graph in
   let modal_model, inject_modal = Modal.Component.state graph in
   let modal_controls = Modal.Component.controls ~inject:inject_modal in
-  (* The destructive discard arrives at the pane pre-wrapped in the confirm
-     modal; commit opens the message prompt. *)
-  let discard =
-    let%arr modal_controls and discard_path = data.discard_path in
-    fun path ->
+  (* The status-bar notice: red errors from git mutations, dim transient
+     info flashes ("copied ..."), which self-clear unless something newer
+     replaced them. *)
+  let notice, set_notice = Bonsai.state None graph in
+  let flash_generation = ref 0 in
+  let set_error_notice =
+    let%arr set_notice in
+    fun message -> set_notice (Option.map message ~f:(fun m -> m, `Error))
+  in
+  let flash =
+    let%arr set_notice in
+    fun message ->
+      let%bind.Effect mine =
+        Effect.of_thunk (fun () ->
+          incr flash_generation;
+          !flash_generation)
+      in
+      let%bind.Effect () = set_notice (Some (message, `Info)) in
+      let%bind.Effect () =
+        Effect.of_deferred_thunk (fun () ->
+          Async.Clock_ns.after (Time_ns.Span.of_sec 2.5))
+      in
+      let%bind.Effect current = Effect.of_thunk (fun () -> !flash_generation) in
+      if current = mine then set_notice None else Effect.Ignore
+  in
+  (* The destructive discard is pre-wrapped in the confirm modal — handed
+     to Git_data, which owns the per-section op wiring. *)
+  let discard_confirm =
+    let%arr modal_controls in
+    fun ~path ~discard ->
       modal_controls.Modal.Component.Controls.confirm
         ~title:"Discard changes?"
         ~body:(path ^ "  (cannot be undone)")
-        ~on_confirm:(discard_path path)
+        ~on_confirm:discard
+  in
+  (* Copy the selected path (repo-root-relative, as git reports it):
+     native tool first, OSC 52 escape to the hosting terminal when none
+     exists (headless/SSH). *)
+  let copy_path =
+    let write_to_tty = Bonsai_term.Expert.Write_to_tty.write_string_to_tty graph in
+    let%arr write_to_tty and flash in
+    fun path ->
+      let%bind.Effect copied =
+        Effect.of_deferred_thunk (fun () -> Clipboard.copy_via_tool path)
+      in
+      match copied with
+      | Ok () -> flash ("copied " ^ path)
+      | Error (_ : Error.t) ->
+        Effect.Many [ write_to_tty (Clipboard.osc52 path); flash ("copied " ^ path) ]
+  in
+  let data =
+    Git_data.create ~discard_confirm ~copy_path ~set_notice:set_error_notice graph
   in
   let commit =
     let%arr modal_controls and commit = data.commit in
@@ -286,21 +299,7 @@ let app ~(dimensions : Dimensions.t Bonsai.t) (local_ graph)
       ~title:"Commit message"
       ~on_submit:commit
   in
-  (* Copy the selected path (repo-root-relative, as git reports it):
-     native tool first, OSC 52 escape to the hosting terminal when none
-     exists (headless/SSH). *)
-  let copy_path =
-    let write_to_tty = Bonsai_term.Expert.Write_to_tty.write_string_to_tty graph in
-    let%arr write_to_tty in
-    fun path ->
-      let%bind.Effect copied =
-        Effect.of_deferred_thunk (fun () -> Clipboard.copy_via_tool path)
-      in
-      match copied with
-      | Ok () -> Effect.Ignore
-      | Error (_ : Error.t) -> write_to_tty (Clipboard.osc52 path)
-  in
-  let layout_tree = layout_tree ~data ~discard ~commit ~copy_path in
+  let layout_tree = layout_tree ~data ~commit ~copy_path in
   (* The stack and committed panes start hidden — Space w s / w c. *)
   let layout_model, layout_inject =
     Layout.Component.state
@@ -327,7 +326,7 @@ let app ~(dimensions : Dimensions.t Bonsai.t) (local_ graph)
     and dimensions
     and layout_model
     and branch = data.branch
-    and notice = data.notice in
+    and notice in
     let branch_info =
       match (branch : Git.Status.Branch.t option) with
       | None -> ""

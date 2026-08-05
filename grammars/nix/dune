@@ -4,6 +4,7 @@
  (libraries tree-sitter)
  (foreign_stubs
   (language c)
+  (flags (:standard -Wno-unused-but-set-variable -Wno-unused-variable))
   (names parser_nix scanner_nix gitter_grammar_nix_stubs)
   ; Headers live in include/ specifically so this never lists "." — an
   ; include dir on the stanza's own directory is a dune dependency cycle.

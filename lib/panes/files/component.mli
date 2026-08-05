@@ -8,12 +8,10 @@ open! Bonsai_term
     viewport WITHOUT moving the cursor — the selection may sit off-screen;
     any cursor-moving key snaps the view back to it.
 
-    s/u/d run [stage]/[unstage]/[discard] on the row under the cursor
-    (files and whole directories alike); c runs [commit]; y runs
-    [copy_path] (copy the row's path to the clipboard). The root passes
-    no-ops for operations that don't apply to a side (discard is
-    Changes-only and MUST arrive pre-wrapped in a confirmation — it is
-    worktree-destructive). *)
+    The effectful keys (s/u/d/y/r) inject [Action.Operate] — the host's
+    state machine resolves the target row at APPLY time and schedules the
+    matching op from its input, so same-frame event bursts stay correct;
+    c runs [commit] directly (no target). *)
 
 val component
   :  status:Render.status Bonsai.t
@@ -25,11 +23,6 @@ val component
   -> reviewed:String.Set.t Bonsai.t
        (** row keys shown checked; [r] runs [toggle_review] on the row *)
   -> side:[ `Staged | `Unstaged | `Committed ]
-  -> stage:(string -> unit Effect.t) Bonsai.t
-  -> unstage:(string -> unit Effect.t) Bonsai.t
-  -> discard:(string -> unit Effect.t) Bonsai.t
   -> commit:unit Effect.t Bonsai.t
-  -> copy_path:(string -> unit Effect.t) Bonsai.t
-  -> toggle_review:(string -> unit Effect.t) Bonsai.t
   -> inject:(State.Action.t -> unit Effect.t) Bonsai.t
   -> Widget.t

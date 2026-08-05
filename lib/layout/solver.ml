@@ -52,7 +52,16 @@ let rec min_along axis (tree : Tree.t) =
     else Int.max (min_along axis first) (min_along axis second)
 ;;
 
-let path_key path = String.concat ~sep:"/" (List.map (List.rev path) ~f:Int.to_string)
+(* Split identity for fraction overrides: derived from the LEFTMOST leaf
+   of each side, not tree position — hiding a pane collapses splits and
+   would otherwise reapply one boundary's dragged fraction to a different
+   boundary. *)
+let rec leftmost = function
+  | Tree.Leaf id -> id
+  | Split { first; _ } -> leftmost first
+;;
+
+let split_key ~first ~second = leftmost first ^ "|" ^ leftmost second
 
 module Solved = struct
   type leaf =
@@ -115,14 +124,14 @@ let divider_after ~axis ~(rect : Geometry.Rect.t) (first : Geometry.Rect.t) =
   | `Col -> { rect with y = first.y + first.height - 1; height = 2 }
 ;;
 
-let rec solve_tree tree ~fractions ~path ~(rect : Geometry.Rect.t) =
+let rec solve_tree tree ~fractions ~(rect : Geometry.Rect.t) =
   if rect.width <= 0 || rect.height <= 0
   then empty
   else (
     match (tree : Tree.t) with
     | Leaf id -> { empty with leaves = [ { Solved.id; rect } ] }
     | Split { axis; frac; first; second } ->
-      let key = path_key path in
+      let key = split_key ~first ~second in
       let frac = Map.find fractions key |> Option.value ~default:frac in
       let total = Geometry.Axis.size axis rect in
       let size_first =
@@ -148,11 +157,11 @@ let rec solve_tree tree ~fractions ~path ~(rect : Geometry.Rect.t) =
       merge
         (merge
            { empty with dividers = divider }
-           (solve_tree first ~fractions ~path:(0 :: path) ~rect:first_rect))
-        (solve_tree second ~fractions ~path:(1 :: path) ~rect:second_rect))
+           (solve_tree first ~fractions ~rect:first_rect))
+        (solve_tree second ~fractions ~rect:second_rect))
 ;;
 
-let solve tree ~fractions ~rect = solve_tree tree ~fractions ~path:[] ~rect
+let solve tree ~fractions ~rect = solve_tree tree ~fractions ~rect
 
 (* Dividers take precedence over leaves at the caller (a divider strip
    overlaps the adjacent leaves' border cells). *)

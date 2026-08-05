@@ -19,6 +19,21 @@ module Model = struct
   let initial = { listing = Listing.Model.initial; collapsed = String.Set.empty }
 end
 
+module Op = struct
+  (* The effectful keys. Routed through the state machine so the TARGET
+     resolves against the model at APPLY time — a same-frame [j, s] burst
+     must stage the row j moved to, not a stale snapshot (the codebase's
+     recurring burst-collapse class). The host schedules the actual
+     effect via [Apply_action_context.schedule_event]. *)
+  type t =
+    | Stage
+    | Unstage
+    | Discard
+    | Copy_path
+    | Toggle_review
+  [@@deriving sexp_of]
+end
+
 module Action = struct
   (* Cursor-moving actions carry the pane height so the transition can
      reveal the selection (the state machine lives in Git_data, which has
@@ -40,6 +55,7 @@ module Action = struct
         ; height : int
         }
     | Rows_changed (* the derived rows changed: repair the selection *)
+    | Operate of Op.t (* handled by the HOST's apply_action wrapper *)
   [@@deriving sexp_of]
 end
 
@@ -102,7 +118,15 @@ let apply_action ~entries (model : Model.t) (action : Action.t) =
           | Some i -> select ~height ~collapsed:model.collapsed i
           | None -> model))
     | Rows_changed ->
-      { model with Model.listing = Listing.rows_changed ~key:row_key current model.listing })
+      { model with Model.listing = Listing.rows_changed ~key:row_key current model.listing }
+    | Operate (_ : Op.t) -> model (* the host wrapper schedules the effect *))
+;;
+
+(* The operation target under the CURRENT selection: a file's path, or a
+   directory's whole subtree path (git pathspecs make that one op). *)
+let target ~entries (model : Model.t) =
+  let rows = Tree.rows ~entries ~collapsed:model.collapsed in
+  List.nth rows (index_of rows model.listing.selection) |> Option.map ~f:row_key
 ;;
 
 (* The file under the selection, if any — a directory row selects

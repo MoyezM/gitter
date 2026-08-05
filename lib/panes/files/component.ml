@@ -8,21 +8,7 @@ open Bonsai.Let_syntax
    own layout panes, which is what makes them independently scrollable,
    focusable, and resizable. *)
 
-let component
-      ~status
-      ~rows
-      ~cursor
-      ~scroll
-      ~counts
-      ~reviewed
-      ~side
-      ~stage
-      ~unstage
-      ~discard
-      ~commit
-      ~copy_path
-      ~toggle_review
-      ~inject
+let component ~status ~rows ~cursor ~scroll ~counts ~reviewed ~side ~commit ~inject
   : Widget.t
   =
   fun ~dimensions (local_ _graph) ->
@@ -31,35 +17,20 @@ let component
     Render.render ~status ~rows ~cursor ~scroll ~counts ~reviewed ~side ~dimensions
   in
   let handler =
-    let%arr inject
-    and cursor
-    and scroll
-    and rows
-    and stage
-    and unstage
-    and discard
-    and commit
-    and copy_path
-    and toggle_review
-    and dimensions in
-    (* s/u act on the row under the cursor: a file's path, or a directory's
-       whole subtree (git pathspecs make that the same operation). *)
-    let operate op =
-      match List.nth rows cursor with
-      | Some (Tree.Dir { path; _ }) -> op path
-      | Some (File { entry; _ }) -> op entry.Git.Status.Entry.path
-      | None -> Effect.Ignore
-    in
+    let%arr inject and scroll and rows and commit and dimensions in
     fun (event : Event.t) ->
       let height = dimensions.height in
       let offset = Listing.offset ~total:(List.length rows) ~height scroll in
       match event with
-      | Event.Key_press { key = ASCII 's'; mods = [] } -> operate stage
-      | Key_press { key = ASCII 'u'; mods = [] } -> operate unstage
-      | Key_press { key = ASCII 'd'; mods = [] } -> operate discard
+      (* Effectful keys go through the machine: the target resolves at
+         APPLY time, so same-frame bursts act on the row the cursor is
+         actually on. *)
+      | Event.Key_press { key = ASCII 's'; mods = [] } -> inject (State.Action.Operate Stage)
+      | Key_press { key = ASCII 'u'; mods = [] } -> inject (Operate Unstage)
+      | Key_press { key = ASCII 'd'; mods = [] } -> inject (Operate Discard)
       | Key_press { key = ASCII 'c'; mods = [] } -> commit
-      | Key_press { key = ASCII 'y'; mods = [] } -> operate copy_path
-      | Key_press { key = ASCII 'r'; mods = [] } -> operate toggle_review
+      | Key_press { key = ASCII 'y'; mods = [] } -> inject (Operate Copy_path)
+      | Key_press { key = ASCII 'r'; mods = [] } -> inject (Operate Toggle_review)
       | Key_press { key = ASCII 'j'; mods = [] }
       | Key_press { key = Arrow `Down; mods = [] } ->
         inject (State.Action.Move { dir = `Down; height })

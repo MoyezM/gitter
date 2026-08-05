@@ -19,6 +19,9 @@ module Action = struct
     | Pan of int (* direction: +1 right, -1 left *)
     | Reveal (* after a doc replacement: re-snap the kept cursor, show it *)
     | Reset
+    | Operate of [ `Stage_hunk | `Unstage_hunk | `Copy_line ]
+      (* effectful keys, resolved at APPLY time by the component's
+         apply_action wrapper (burst-safe) *)
   [@@deriving sexp_of]
 end
 
@@ -129,4 +132,20 @@ let apply_action (doc : Document.t) (model : Model.t) (action : Action.t) ~heigh
           ~min:0
           ~max:(max_pan doc ~height ~scroll:model.scroll)
     }
+  | Operate _ -> model (* the component's wrapper schedules the effect *)
+;;
+
+(* The y target: path:LINE for the cursor row (worktree-side number, old
+   side for deletions — the jump format editors accept); bare path when
+   there is no document or the row has no number. *)
+let yank_target (doc : Document.t) (model : Model.t) ~path =
+  if Array.is_empty doc
+  then path
+  else (
+    match doc.(effective_cursor doc model) with
+    | Document.Diff_line (old_no, new_no, _) ->
+      (match Option.first_some new_no old_no with
+       | Some n -> sprintf "%s:%d" path n
+       | None -> path)
+    | File_header _ | Hunk_header _ -> path)
 ;;

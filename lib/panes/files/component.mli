@@ -7,10 +7,10 @@ open! Bonsai_term
     activates (toggles directories, selects files); wheel moves the cursor.
 
     s/u/d run [stage]/[unstage]/[discard] on the row under the cursor
-    (files and whole directories alike); c runs [commit]. The root passes
-    no-ops for operations that don't apply to a side (discard is
-    Changes-only and MUST arrive pre-wrapped in a confirmation — it is
-    worktree-destructive). *)
+    (files and whole directories alike); c runs [commit]; e runs [edit]
+    (the embedded editor). The root passes no-ops for operations that don't
+    apply to a side (discard is Changes-only and MUST arrive pre-wrapped in
+    a confirmation — it is worktree-destructive). *)
 
 val component
   :  status:Render.status Bonsai.t
@@ -21,5 +21,6 @@ val component
   -> unstage:(string -> unit Effect.t) Bonsai.t
   -> discard:(string -> unit Effect.t) Bonsai.t
   -> commit:unit Effect.t Bonsai.t
+  -> edit:(string -> unit Effect.t) Bonsai.t
   -> inject:(State.Action.t -> unit Effect.t) Bonsai.t
   -> Widget.t

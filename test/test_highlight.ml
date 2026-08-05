@@ -63,6 +63,31 @@ let () =
   check "c: 'return' keyword" (has ~capture:"keyword" (line t 2))
 ;;
 
+(* The 2026-08 batch: one shallow assertion each — the registry loop below
+   already validates every grammar's query compiles. *)
+let () =
+  let t = session ~path:"a.ts" "const x: number = 42\n" in
+  check "ts: keyword" (has ~capture:"keyword" (line t 1));
+  let t = session ~path:"a.tsx" "const el = <div className=\"x\" />\n" in
+  check "tsx: session exists" (not (H.is_empty t));
+  let t = session ~path:"a.html" "<body class=\"main\"></body>\n" in
+  check "html: tag" (has ~capture:"tag" (line t 1) || has ~capture:"constructor" (line t 1));
+  let t = session ~path:"a.css" ".cls { color: red; }\n" in
+  check "css: session exists" (not (H.is_empty t));
+  let t = session ~path:"a.go" "func main() {\n\treturn\n}\n" in
+  check "go: keyword" (has ~capture:"keyword" (line t 1));
+  let t = session ~path:"a.rs" "fn main() { let x = 1; }\n" in
+  check "rust: keyword" (has ~capture:"keyword" (line t 1));
+  let t = session ~path:"a.sh" "if true; then\n  echo hi\nfi\n" in
+  check "bash: keyword" (has ~capture:"keyword" (line t 1));
+  let t = session ~path:"a.yaml" "key: value\n" in
+  check "yaml: session exists" (not (H.is_empty t));
+  let t = session ~path:"a.toml" "[section]\nkey = 1\n" in
+  check "toml: session exists" (not (H.is_empty t));
+  let t = session ~path:"a.md" "# Title\n" in
+  check "markdown: session exists" (not (H.is_empty t))
+;;
+
 (* Every registered grammar must have a loadable query: force each one so
    scripts/add-grammar's build+test gate validates languages without
    dedicated tests above. *)

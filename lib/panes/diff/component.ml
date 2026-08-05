@@ -10,6 +10,7 @@ let component
       ~(revision : int Bonsai.t)
       ~stage_hunk
       ~unstage_hunk
+      ~edit
   : Widget.t
   =
   fun ~dimensions (local_ graph) ->
@@ -77,7 +78,14 @@ let component
     Render.render ~content ~model ~dimensions
   in
   let handler =
-    let%arr doc_input and inject and model and result and selection and stage_hunk and unstage_hunk in
+    let%arr doc_input
+    and inject
+    and model
+    and result
+    and selection
+    and stage_hunk
+    and unstage_hunk
+    and edit in
     let doc, height = doc_input in
     (* s/u apply the hunk enclosing the (visible) cursor to the index; the
        raw hunk bytes come from the payload's parsed files. Failure (index
@@ -107,6 +115,10 @@ let component
           hunk_op ~wanted_side:`Unstaged stage_hunk
         | Key_press { key = ASCII 'u'; mods = [] } ->
           hunk_op ~wanted_side:`Staged unstage_hunk
+        | Key_press { key = ASCII 'e'; mods = [] } ->
+          (match selection with
+           | Some (path, _) -> edit path
+           | None -> Effect.Ignore)
         | Event.Key_press { key = ASCII 'j'; mods = [] }
         | Key_press { key = Arrow `Down; mods = [] } -> inject (State.Action.Move 1)
         | Key_press { key = ASCII 'k'; mods = [] }

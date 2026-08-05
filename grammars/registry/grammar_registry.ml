@@ -5,6 +5,9 @@ type spec =
   }
 
 let find = function
+  | "sh" -> Some { language = Gitter_grammar_bash.language; highlights_query = Gitter_grammar_bash.highlights_query }
+  | "bash" -> Some { language = Gitter_grammar_bash.language; highlights_query = Gitter_grammar_bash.highlights_query }
+  | "zsh" -> Some { language = Gitter_grammar_bash.language; highlights_query = Gitter_grammar_bash.highlights_query }
   | "c" -> Some { language = Gitter_grammar_c.language; highlights_query = Gitter_grammar_c.highlights_query }
   | "h" -> Some { language = Gitter_grammar_c.language; highlights_query = Gitter_grammar_c.highlights_query }
   | "cpp" -> Some { language = Gitter_grammar_cpp.language; highlights_query = Gitter_grammar_cpp.highlights_query }
@@ -12,15 +15,32 @@ let find = function
   | "cxx" -> Some { language = Gitter_grammar_cpp.language; highlights_query = Gitter_grammar_cpp.highlights_query }
   | "hpp" -> Some { language = Gitter_grammar_cpp.language; highlights_query = Gitter_grammar_cpp.highlights_query }
   | "hh" -> Some { language = Gitter_grammar_cpp.language; highlights_query = Gitter_grammar_cpp.highlights_query }
+  | "css" -> Some { language = Gitter_grammar_css.language; highlights_query = Gitter_grammar_css.highlights_query }
+  | "go" -> Some { language = Gitter_grammar_go.language; highlights_query = Gitter_grammar_go.highlights_query }
+  | "html" -> Some { language = Gitter_grammar_html.language; highlights_query = Gitter_grammar_html.highlights_query }
+  | "htm" -> Some { language = Gitter_grammar_html.language; highlights_query = Gitter_grammar_html.highlights_query }
   | "js" -> Some { language = Gitter_grammar_javascript.language; highlights_query = Gitter_grammar_javascript.highlights_query }
   | "mjs" -> Some { language = Gitter_grammar_javascript.language; highlights_query = Gitter_grammar_javascript.highlights_query }
   | "cjs" -> Some { language = Gitter_grammar_javascript.language; highlights_query = Gitter_grammar_javascript.highlights_query }
   | "jsx" -> Some { language = Gitter_grammar_javascript.language; highlights_query = Gitter_grammar_javascript.highlights_query }
+  | "md" -> Some { language = Gitter_grammar_markdown.language; highlights_query = Gitter_grammar_markdown.highlights_query }
+  | "markdown" -> Some { language = Gitter_grammar_markdown.language; highlights_query = Gitter_grammar_markdown.highlights_query }
   | "py" -> Some { language = Gitter_grammar_python.language; highlights_query = Gitter_grammar_python.highlights_query }
+  | "rs" -> Some { language = Gitter_grammar_rust.language; highlights_query = Gitter_grammar_rust.highlights_query }
+  | "toml" -> Some { language = Gitter_grammar_toml.language; highlights_query = Gitter_grammar_toml.highlights_query }
+  | "tsx" -> Some { language = Gitter_grammar_tsx.language; highlights_query = Gitter_grammar_tsx.highlights_query }
+  | "ts" -> Some { language = Gitter_grammar_typescript.language; highlights_query = Gitter_grammar_typescript.highlights_query }
+  | "mts" -> Some { language = Gitter_grammar_typescript.language; highlights_query = Gitter_grammar_typescript.highlights_query }
+  | "cts" -> Some { language = Gitter_grammar_typescript.language; highlights_query = Gitter_grammar_typescript.highlights_query }
+  | "yaml" -> Some { language = Gitter_grammar_yaml.language; highlights_query = Gitter_grammar_yaml.highlights_query }
+  | "yml" -> Some { language = Gitter_grammar_yaml.language; highlights_query = Gitter_grammar_yaml.highlights_query }
   | _ -> None
 
 let extensions =
   [
+    "sh";
+    "bash";
+    "zsh";
     "c";
     "h";
     "cpp";
@@ -28,9 +48,23 @@ let extensions =
     "cxx";
     "hpp";
     "hh";
+    "css";
+    "go";
+    "html";
+    "htm";
     "js";
     "mjs";
     "cjs";
     "jsx";
+    "md";
+    "markdown";
     "py";
+    "rs";
+    "toml";
+    "tsx";
+    "ts";
+    "mts";
+    "cts";
+    "yaml";
+    "yml";
   ]

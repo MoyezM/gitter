@@ -13,4 +13,5 @@ val component
   -> revision:int Bonsai.t
   -> stage_hunk:(path:string -> raw:string -> unit Effect.t) Bonsai.t
   -> unstage_hunk:(path:string -> raw:string -> unit Effect.t) Bonsai.t
+  -> edit:(string -> unit Effect.t) Bonsai.t
   -> Widget.t

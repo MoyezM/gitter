@@ -2,8 +2,13 @@
 # Add (or regenerate) a vendored tree-sitter grammar — fully automatic, no
 # manual code changes:
 #
-#   scripts/add-grammar <lang> <github-repo> <ref> [extensions-csv]
+#   scripts/add-grammar <lang> <repo> <ref> [exts-csv] [src-subdir] [query-prepend]
 #   e.g. scripts/add-grammar rust tree-sitter/tree-sitter-rust v0.23.2 rs
+#   [src-subdir] is for multi-grammar repos (tree-sitter-typescript ships
+#   typescript/ and tsx/); queries fall back to the repo root.
+#   [query-prepend] is a comma list of already-vendored grammars whose
+#   highlights.scm get prepended — for repos whose queries are additions on
+#   a base language (typescript's 35 lines extend javascript's).
 #
 # What it does:
 #   1. fetches the grammar's generated parser (+ scanner, headers) and its
@@ -67,35 +72,119 @@ if [[ "${1:-}" == "--regen" ]]; then
   exit 0
 fi
 
-lang="${1:?usage: add-grammar <lang> <github-repo> <ref> [extensions-csv]}"
-repo="${2:?usage: add-grammar <lang> <github-repo> <ref> [extensions-csv]}"
-ref="${3:?usage: add-grammar <lang> <github-repo> <ref> [extensions-csv]}"
+lang="${1:?usage: add-grammar <lang> <github-repo> <ref> [extensions-csv] [src-subdir]}"
+repo="${2:?usage: add-grammar <lang> <github-repo> <ref> [extensions-csv] [src-subdir]}"
+ref="${3:?usage: add-grammar <lang> <github-repo> <ref> [extensions-csv] [src-subdir]}"
 exts="${4:-$lang}"
+subdir="${5:-}"
+prepend="${6:-}"
 
 dir="$root/grammars/$lang"
 base="https://raw.githubusercontent.com/$repo/$ref"
+srcbase="$base${subdir:+/$subdir}/src"
 
 rm -rf "$dir"
 mkdir -p "$dir/include/tree_sitter"
 
+# Grammars' quoted includes beyond the tree_sitter/ headers: sibling files
+# in src/ (html's "tag.h") and paths climbing out of it (typescript's
+# "../../common/scanner.h"). Fetch each next to the vendored sources —
+# climb-outs get renamed and their include rewritten, since the relative
+# path can't survive our flat layout. Recursive: fetched headers may
+# include further files.
+resolve_includes() {
+  local cfile="$1"
+  { grep -o '#include "[^"]*"' "$cfile" 2>/dev/null || true; } \
+    | sed 's/#include "//; s/"$//' \
+    | sort -u \
+    | while IFS= read -r rel; do
+        case "$rel" in
+          tree_sitter/*) continue ;; # provided via include/
+        esac
+        local name
+        case "$rel" in
+          ../*) name="dep_${lang}_$(basename "$rel")" ;;
+          *) name="$(basename "$rel")" ;;
+        esac
+        [ -f "$dir/$name" ] && continue
+        if curl -sf "$srcbase/$rel" -o "$dir/$name"; then
+          echo "fetched include $rel -> $name"
+          if [ "$rel" != "$name" ]; then
+            sed -i '' "s|#include \"$rel\"|#include \"$name\"|" "$cfile"
+          fi
+          resolve_includes "$dir/$name"
+        else
+          echo "warning: include $rel not fetchable from $srcbase/$rel"
+          rm -f "$dir/$name"
+        fi
+      done
+}
+
 echo "fetching parser.c..."
-curl -sf "$base/src/parser.c" -o "$dir/parser_$lang.c"
+curl -sf "$srcbase/parser.c" -o "$dir/parser_$lang.c"
+resolve_includes "$dir/parser_$lang.c"
 
 names="parser_$lang"
-if curl -sf "$base/src/scanner.c" -o "$dir/scanner_$lang.c"; then
+if curl -sf "$srcbase/scanner.c" -o "$dir/scanner_$lang.c"; then
   echo "fetching scanner.c... found"
   names="$names scanner_$lang"
+  resolve_includes "$dir/scanner_$lang.c"
 else
   echo "no scanner.c (grammar has no external scanner)"
 fi
 
 for h in parser.h alloc.h array.h; do
-  curl -sf "$base/src/tree_sitter/$h" -o "$dir/include/tree_sitter/$h" || true
+  curl -sf "$srcbase/tree_sitter/$h" -o "$dir/include/tree_sitter/$h" || true
 done
 
-if ! curl -sf "$base/queries/highlights.scm" -o "$dir/highlights.scm"; then
-  echo "warning: no upstream highlights.scm; writing a minimal one"
-  printf '(comment) @comment\n' > "$dir/highlights.scm"
+# The rest of src/: grammars may #include sibling files, sometimes via
+# macros the include-scanner above can't see (yaml builds "schema.core.c"
+# with a token-pasting macro). List the directory through the GitHub API
+# and vendor every loose .c/.h — they are include-only; parser and scanner
+# remain the only compiled units.
+listing="$(curl -sf "https://api.github.com/repos/$repo/contents/${subdir:+$subdir/}src?ref=$ref" || true)"
+if [ -n "$listing" ]; then
+  echo "$listing" | python3 -c '
+import json, sys
+try:
+    entries = json.load(sys.stdin)
+except Exception:
+    entries = []
+for e in entries if isinstance(entries, list) else []:
+    n = e.get("name", "")
+    if e.get("type") == "file" and (n.endswith(".c") or n.endswith(".h")) and n not in ("parser.c", "scanner.c"):
+        print(n)' \
+    | while IFS= read -r extra; do
+        [ -f "$dir/$extra" ] && continue
+        if curl -sf "$srcbase/$extra" -o "$dir/$extra"; then
+          echo "vendored src/$extra"
+        fi
+      done
+fi
+
+# Queries: the grammar's own dir first, then the repo root (multi-grammar
+# repos usually share one highlights.scm at the root).
+if ! { [ -n "$subdir" ] && curl -sf "$base/$subdir/queries/highlights.scm" -o "$dir/highlights.scm"; }; then
+  if ! curl -sf "$base/queries/highlights.scm" -o "$dir/highlights.scm"; then
+    echo "warning: no upstream highlights.scm; writing a minimal one"
+    printf '(comment) @comment\n' > "$dir/highlights.scm"
+  fi
+fi
+
+if [ -n "$prepend" ]; then
+  combined="$dir/.highlights.tmp"
+  : > "$combined"
+  for p in $(echo "$prepend" | tr ',' ' '); do
+    if [ -f "$root/grammars/$p/highlights.scm" ]; then
+      echo "prepending grammars/$p/highlights.scm"
+      cat "$root/grammars/$p/highlights.scm" >> "$combined"
+      echo >> "$combined"
+    else
+      echo "warning: prepend grammar $p has no highlights.scm"
+    fi
+  done
+  cat "$dir/highlights.scm" >> "$combined"
+  mv "$combined" "$dir/highlights.scm"
 fi
 
 echo "$exts" | tr ',' '\n' > "$dir/extensions"
@@ -132,6 +221,9 @@ cat > "$dir/dune" <<EOF
   (names $names gitter_grammar_${lang}_stubs)
   ; Headers live in include/ specifically so this never lists "." — an
   ; include dir on the stanza's own directory is a dune dependency cycle.
+  ; extra_deps makes include-only sibling sources visible to the compile
+  ; sandbox (yaml #includes schema.*.c via a macro; dune only tracks .h).
+  (extra_deps (glob_files *.c) (glob_files *.h))
   (include_dirs include)))
 
 (rule

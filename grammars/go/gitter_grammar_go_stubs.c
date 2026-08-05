@@ -1,0 +1,11 @@
+#include <caml/alloc.h>
+#include <caml/memory.h>
+#include <caml/mlvalues.h>
+
+/* Exported by the vendored grammar (parser_go.c). */
+const void* tree_sitter_go(void);
+
+CAMLprim value caml_gitter_grammar_go_language(value unit) {
+  CAMLparam1(unit);
+  CAMLreturn(caml_copy_nativeint((intnat)tree_sitter_go()));
+}

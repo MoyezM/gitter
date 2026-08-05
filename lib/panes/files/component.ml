@@ -8,7 +8,7 @@ open Bonsai.Let_syntax
    own layout panes, which is what makes them independently scrollable,
    focusable, and resizable. *)
 
-let component ~status ~rows ~cursor ~side ~stage ~unstage ~discard ~commit ~inject
+let component ~status ~rows ~cursor ~side ~stage ~unstage ~discard ~commit ~edit ~inject
   : Widget.t
   =
   fun ~dimensions (local_ _graph) ->
@@ -17,7 +17,15 @@ let component ~status ~rows ~cursor ~side ~stage ~unstage ~discard ~commit ~inje
     Render.render ~status ~rows ~cursor ~side ~dimensions
   in
   let handler =
-    let%arr inject and cursor and rows and stage and unstage and discard and commit and dimensions in
+    let%arr inject
+    and cursor
+    and rows
+    and stage
+    and unstage
+    and discard
+    and commit
+    and edit
+    and dimensions in
     (* s/u act on the row under the cursor: a file's path, or a directory's
        whole subtree (git pathspecs make that the same operation). *)
     let operate op =
@@ -33,6 +41,7 @@ let component ~status ~rows ~cursor ~side ~stage ~unstage ~discard ~commit ~inje
       | Key_press { key = ASCII 'u'; mods = [] } -> operate unstage
       | Key_press { key = ASCII 'd'; mods = [] } -> operate discard
       | Key_press { key = ASCII 'c'; mods = [] } -> commit
+      | Key_press { key = ASCII 'e'; mods = [] } -> operate edit
       | Key_press { key = ASCII 'j'; mods = [] }
       | Key_press { key = Arrow `Down; mods = [] } -> inject (State.Action.Move `Down)
       | Key_press { key = ASCII 'k'; mods = [] }

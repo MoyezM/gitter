@@ -19,7 +19,13 @@ let () =
   check "snap forward off rule" (D.snap lines ~dir:1 0 = 1);
   check "snap backward off rule" (D.snap lines ~dir:(-1) 6 = 5);
   check "snap stays on selectable" (D.snap lines ~dir:1 3 = 3);
-  check "snap clamps at end" (D.snap lines ~dir:1 99 = 11)
+  check "snap clamps at end" (D.snap lines ~dir:1 99 = 11);
+  (* The fallback walks the OPPOSITE direction, even past several rules. *)
+  let tail_rules = lines @ [ rule; rule ] in
+  check "falls back past multiple rules" (D.snap tail_rules ~dir:1 13 = 11);
+  let head_rules = [ rule; rule ] @ List.init 3 ~f:line in
+  check "falls back forward past rules" (D.snap head_rules ~dir:(-1) 0 = 2);
+  check "no diff lines: identity" (D.snap [ rule; rule ] ~dir:1 1 = 1)
 ;;
 
 (* follow: keeps the cursor within scrolloff of the edges. *)

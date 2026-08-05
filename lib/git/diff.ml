@@ -68,28 +68,40 @@ let body_line line =
   | _ -> None
 ;;
 
-(* Group lines at "diff --git" boundaries, then each file's tail at "@@"
-   boundaries. The headerless leading groups — anything before the first
-   file, and each file's ---/+++/index preamble — fall out of the match. *)
+(* Split [lines] at each line beginning with [marker]:
+
+     split_runs ~marker:"@@" ["index"; "@@ -1 +1 @@"; "+a"; "@@ -9 +9 @@"]
+     = ~leading:["index"], ~runs:[ "@@ -1 +1 @@", ["+a"]; "@@ -9 +9 @@", [] ]
+
+   Every run is a marker line paired with the lines under it; [leading] is
+   whatever preceded the first marker. *)
+let split_runs ~marker lines =
+  let is_marker line = String.is_prefix line ~prefix:marker in
+  let groups = List.group lines ~break:(fun _ line -> is_marker line) in
+  let leading, run_groups =
+    match groups with
+    | (line :: _ as first) :: rest when not (is_marker line) -> first, rest
+    | groups -> [], groups
+  in
+  let runs =
+    List.filter_map run_groups ~f:(function
+      | header :: body -> Some (header, body)
+      | [] -> None)
+  in
+  ~leading, ~runs
+;;
+
+let hunk_of_run (header, body) =
+  let old_start, new_start = hunk_starts header in
+  { Hunk.header; old_start; new_start; lines = List.filter_map body ~f:body_line }
+;;
+
+let file_of_run (header, rest) =
+  let ~leading:_preamble, ~runs = split_runs ~marker:"@@" rest in
+  { File.path = path_of_header header; hunks = List.map runs ~f:hunk_of_run }
+;;
+
 let parse output : File.t list =
-  let starts prefix line = String.is_prefix line ~prefix in
-  String.split_lines output
-  |> List.group ~break:(fun _ line -> starts "diff --git" line)
-  |> List.filter_map ~f:(function
-    | header :: rest when starts "diff --git" header ->
-      let hunks =
-        List.group rest ~break:(fun _ line -> starts "@@" line)
-        |> List.filter_map ~f:(function
-          | hh :: body when starts "@@" hh ->
-            let old_start, new_start = hunk_starts hh in
-            Some
-              { Hunk.header = hh
-              ; old_start
-              ; new_start
-              ; lines = List.filter_map body ~f:body_line
-              }
-          | _ -> None)
-      in
-      Some { File.path = path_of_header header; hunks }
-    | _ -> None)
+  let ~leading:_junk, ~runs = split_runs ~marker:"diff --git" (String.split_lines output) in
+  List.map runs ~f:file_of_run
 ;;

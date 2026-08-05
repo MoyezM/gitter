@@ -52,6 +52,12 @@ type display_line =
   | Hunk_header of string
   | Diff_line of int option * int option * Git.Diff.Line.t
 
+(* The rows the cursor may rest on. *)
+let is_diff_line = function
+  | Diff_line _ -> true
+  | File_header _ | Hunk_header _ -> false
+;;
+
 let flatten files =
   let many = List.length files > 1 in
   List.concat_map files ~f:(fun (file : Git.Diff.File.t) ->
@@ -180,14 +186,10 @@ let render ~lines ~cursor ~scroll ~(dimensions : Dimensions.t) =
     (* Freshly loaded diffs start with the cursor on the file header; show it
        on the first visible diff line instead of nowhere. *)
     let cursor =
-      let is_line = function
-        | Diff_line _ -> true
-        | File_header _ | Hunk_header _ -> false
-      in
       match List.nth visible (cursor - scroll) with
-      | Some l when is_line l -> cursor
+      | Some l when is_diff_line l -> cursor
       | _ ->
-        (match List.findi visible ~f:(fun _ l -> is_line l) with
+        (match List.findi visible ~f:(fun _ l -> is_diff_line l) with
          | Some (i, _) -> i + scroll
          | None -> cursor)
     in
@@ -231,25 +233,15 @@ type view_state =
 
 let initial_view_state = { cursor = 0; scroll = 0 }
 
-let selectable lines i =
-  match List.nth lines i with
-  | Some (Diff_line _) -> true
-  | Some (File_header _ | Hunk_header _) | None -> false
-;;
-
-(* Nearest selectable line at or beyond [i], walking [dir]; falls back to
-   walking the other way from the boundary. *)
+(* The diff line nearest [i], preferring direction [dir]; falls back to the
+   nearest one the other way; [i] itself when the document has none. *)
 let snap lines ~dir i =
-  let count = List.length lines in
-  let i = Int.max 0 (Int.min (count - 1) i) in
-  let step = if dir > 0 then 1 else -1 in
-  let rec go j = if j < 0 || j >= count then None else if selectable lines j then Some j else go (j + step) in
-  match go i with
-  | Some j -> j
-  | None ->
-    (match go (i - step) with
-     | Some j -> j
-     | None -> i)
+  let i = Int.clamp_exn i ~min:0 ~max:(Int.max 0 (List.length lines - 1)) in
+  let idxs = List.filter_mapi lines ~f:(fun j l -> Option.some_if (is_diff_line l) j) in
+  let fwd = List.find idxs ~f:(fun j -> j >= i) in
+  let bwd = List.find (List.rev idxs) ~f:(fun j -> j <= i) in
+  let first, second = if dir >= 0 then fwd, bwd else bwd, fwd in
+  Option.first_some first second |> Option.value ~default:i
 ;;
 
 (* Scroll so the cursor sits within scrolloff of neither edge. *)

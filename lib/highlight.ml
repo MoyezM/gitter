@@ -143,21 +143,24 @@ let window (t : t) ~from_line ~to_line : Span.t list array =
         | _ -> []
       in
       let out = Array.create ~len:(to_line - from_line + 1) [] in
+      (* Distribute each capture to the lines it touches: the affected line
+         range is two [line_of] lookups, per-line columns are clamps. The
+         ranged query can return captures reaching far outside the window
+         (e.g. a file-head comment) — clamping to the window, rather than
+         walking from the capture's start line, keeps this O(window). *)
       List.iter triples ~f:(fun (sb, eb, capture) ->
-        let rec go pos i =
-          if pos < eb && i < n_lines && i + 1 <= to_line
-          then (
-            let ls = s.starts.(i) in
-            let le = line_end s i in
-            let stop = Int.min eb le in
-            if stop > pos && i + 1 >= from_line
-            then (
-              let idx = i + 1 - from_line in
-              out.(idx)
-              <- { Span.start_col = pos - ls; end_col = stop - ls; capture } :: out.(idx));
-            go (if i + 1 < n_lines then s.starts.(i + 1) else eb) (i + 1))
-        in
-        go sb (line_of ~starts:s.starts sb));
+        let first = Int.max from_line (line_of ~starts:s.starts sb + 1) in
+        let last = Int.min to_line (line_of ~starts:s.starts (eb - 1) + 1) in
+        for line = first to last do
+          let i = line - 1 in
+          let ls = s.starts.(i) in
+          let start_col = Int.max sb ls - ls in
+          let end_col = Int.min eb (line_end s i) - ls in
+          if end_col > start_col
+          then
+            out.(line - from_line)
+            <- { Span.start_col; end_col; capture } :: out.(line - from_line)
+        done);
       Array.map out ~f:(fun spans ->
         List.sort spans ~compare:(fun a b -> Int.compare a.Span.start_col b.Span.start_col)))
 ;;

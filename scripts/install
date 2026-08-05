@@ -1,0 +1,8 @@
+#!/usr/bin/env bash
+# Build and install gitter to ~/.local/bin (a COPY — survives dune clean;
+# rerun this to ship yourself a new version).
+set -euo pipefail
+cd "$(dirname "$0")/.."
+nix develop path:. -c dune build @install
+nix develop path:. -c dune install --prefix "$HOME/.local" --sections bin gitter
+echo "installed: $HOME/.local/bin/gitter ($(du -h "$HOME/.local/bin/gitter" | cut -f1))"

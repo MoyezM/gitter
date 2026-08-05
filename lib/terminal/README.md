@@ -33,9 +33,15 @@ by libvterm per the app's negotiated modes).
 4. Move `test_terminal.ml` / `test_session.ml` back to `test/` and add
    them (plus `async bonsai_term` libraries) to `test/dune`.
 5. Wire the feature: `Term_pane.Component.create/controls/wrap` in
-   `app.ml` (see git history), keybinding + status-bar hints. The frame
-   loop wakeup it needs (`Gitter.Wake` → `Driver.send_incoming_event`)
-   is still live in `bin/main.ml`.
+   `app.ml` (see git history), keybinding + status-bar hints.
+6. Restore the frame-loop wakeup: switch `bin/main.ml` from plain
+   `Bonsai_term.start` back to `start_with_driver` and install
+   `Gitter.Wake.set (fun () -> Driver.send_incoming_event driver ())`
+   (see git history). CAUTION: `start_with_driver` does not add Ctrl-C
+   exit — reuse `Bonsai_term.Private.For_testing.make_app_exit_on_ctrlc`
+   rather than matching the key yourself; notty reports Ctrl-C as
+   UPPERCASE `ASCII 'C'`, and a hand-rolled lowercase match silently
+   never fires (this happened).
 
 Known constraint baked into `session.ml`: macOS kqueue cannot watch pty
 master fds, so IO is blocking `read(2)` on a pool thread and synchronous

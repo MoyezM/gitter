@@ -1,35 +1,32 @@
 open! Core
 open Async
 
-(* [start_with_driver] instead of [start]: the driver handle lets
-   background producers wake the frame loop via [Gitter.Wake] — see
-   lib/wake.ml (the archived embedded terminal was its first user; kept
-   because any future background producer needs it). Ctrl-C exit is
-   re-implemented here because plain [start] added it for us. *)
+(* Plain [Bonsai_term.start]: it owns Ctrl-C exit (notty reports it as
+   uppercase 'C' — matching it by hand is how it silently broke once).
+   The archived embedded terminal needed [start_with_driver] for the
+   [Gitter.Wake] frame-loop wakeup; reviving it means switching back —
+   see lib/terminal/README.md. *)
 let run () =
-  let%bind.Deferred.Or_error driver =
-    Bonsai_term.start_with_driver
-      (* 120 covers ProMotion displays; frames are cheap (windowed highlight
-         queries run 0.1–0.4ms) so the higher tick just means wheel events
-         batch less and scrolling renders more continuously. *)
-      ~target_frames_per_second:120.
-      ~get_view_and_handler:Fn.id
-      ~handle_incoming:(fun _ () -> Bonsai_term.Effect.Ignore)
-      (fun ~exit ~dimensions (local_ graph) ->
-        let ~view, ~handler = Gitter.App.app ~dimensions graph in
-        let handler =
-          let open Bonsai.Let_syntax in
-          let%arr handler in
-          fun (event : Bonsai_term.Event.t) ->
-            match event with
-            | Key_press { key = ASCII 'c'; mods = [ Ctrl ] } -> exit ()
-            | event -> handler event
-        in
-        Bonsai_term.stitch (~view, ~handler))
+  (* The whole app treats paths as repo-root-relative (git status
+     porcelain semantics), so anchor there no matter where gitter was
+     launched — also what makes `gitter` work from a subdirectory. Not a
+     git repo: leave cwd alone and let the status pane show the error. *)
+  let%bind.Deferred () =
+    match%map.Deferred
+      Process.run ~prog:"git" ~args:[ "rev-parse"; "--show-toplevel" ] ()
+    with
+    | Error (_ : Error.t) -> ()
+    | Ok out ->
+      (match String.strip out with
+       | "" -> ()
+       | root ->
+         (try Core_unix.chdir root with
+          | _ -> ()))
   in
-  Gitter.Wake.set (fun () -> Bonsai_term.Driver.send_incoming_event driver ());
-  match%map Bonsai_term.Driver.finished driver with
-  | Ok () | Error `Incoming_events_pipe_closed -> Ok ()
+  (* 120 covers ProMotion displays; frames are cheap (windowed highlight
+     queries run 0.1–0.4ms) so the higher tick just means wheel events
+     batch less and scrolling renders more continuously. *)
+  Bonsai_term.start ~target_frames_per_second:120. Gitter.App.app
 ;;
 
 let command =

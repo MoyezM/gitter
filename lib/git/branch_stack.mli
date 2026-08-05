@@ -37,3 +37,7 @@ val parse
   -> trunk:string
   -> current:string option
   -> Branch.t list
+
+(** The current branch's parent branch in a parsed stack — the default
+    base for the committed-vs-base view. None when absent or on trunk. *)
+val parent_of_current : Branch.t list -> string option

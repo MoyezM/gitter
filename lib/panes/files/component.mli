@@ -22,7 +22,7 @@ val component
   -> scroll:int Bonsai.t
   -> counts:(int * int) String.Map.t Bonsai.t
        (** per-file (added, removed) for this side; dirs sum their subtree *)
-  -> side:[ `Staged | `Unstaged ]
+  -> side:[ `Staged | `Unstaged | `Committed ]
   -> stage:(string -> unit Effect.t) Bonsai.t
   -> unstage:(string -> unit Effect.t) Bonsai.t
   -> discard:(string -> unit Effect.t) Bonsai.t

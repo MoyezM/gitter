@@ -22,7 +22,7 @@ let content ~selection ~(result : Fetch.result) : content =
   | None -> `Message "no file selected"
   | Some sel ->
     (match result with
-     | Some (key, r) when [%equal: string * [ `Staged | `Unstaged ]] sel key ->
+     | Some (key, r) when [%equal: Fetch.key] sel key ->
        (match r with
         | Error e -> `Message ("git error: " ^ Error.to_string_hum e)
         | Ok (payload : Fetch.payload) ->

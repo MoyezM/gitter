@@ -188,4 +188,21 @@ let () =
        [ "lib/app.ml", (3, 1); "lib/new/x.ml", (2, 0); "b.ml", (5, 4) ])
 ;;
 
+
+(* name-status: the committed pane's entry source. *)
+let () =
+  let out = "M\tlib/app.ml\nA\tnew.ml\nD\tgone.ml\nR100\told.ml\tnew_name.ml\nT\tlink\n" in
+  let entries = Gitter.Git.Status.parse_name_status out in
+  let letters = List.map entries ~f:(fun e -> e.Gitter.Git.Status.Entry.index) in
+  let paths = List.map entries ~f:(fun e -> e.Gitter.Git.Status.Entry.path) in
+  check "name-status letters" ([%equal: char list] letters [ 'M'; 'A'; 'D'; 'R'; 'T' ]);
+  check "name-status paths (rename keeps new)"
+    ([%equal: string list] paths [ "lib/app.ml"; "new.ml"; "gone.ml"; "new_name.ml"; "link" ]);
+  check "rename carries from"
+    (List.exists entries ~f:(fun e ->
+       match e.kind with
+       | Gitter.Git.Status.Entry.Kind.Renamed { from } -> String.equal from "old.ml"
+       | _ -> false))
+;;
+
 let () = print_endline "All git parser tests passed."

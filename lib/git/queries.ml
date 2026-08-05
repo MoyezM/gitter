@@ -186,3 +186,35 @@ let diffstat () =
   let%map unstaged = Runner.git [ "diff"; "--no-color"; "--numstat" ] in
   by_path staged, by_path unstaged
 ;;
+
+(* ---- the committed view (this branch vs its base) ---------------------- *)
+
+(* What the branch adds over [base], merge-base semantics (the three-dot
+   range): entries plus per-file +/- counts. A missing/unrelated base
+   yields empty — the pane shows its idle message. *)
+let committed ~base () =
+  let range = base ^ "...HEAD" in
+  let open Deferred.Or_error.Let_syntax in
+  let%bind names =
+    Runner.git [ "diff"; "--no-color"; "--name-status"; "-M"; range ]
+  in
+  let%map stats = Runner.git [ "diff"; "--no-color"; "--numstat"; "-M"; range ] in
+  ( Status.parse_name_status names
+  , Diff.numstat stats |> String.Map.of_alist_reduce ~f:(fun first _ -> first) )
+;;
+
+(* The two blob sides of a committed file diff, for highlighting: the
+   merge-base's content and HEAD's. *)
+let file_at_base ~base path =
+  let open Deferred.Or_error.Let_syntax in
+  let%bind mb = Runner.git [ "merge-base"; base; "HEAD" ] in
+  Runner.git [ "show"; String.strip mb ^ ":" ^ path ]
+;;
+
+let diff_committed ~base path =
+  let%bind.Deferred.Or_error output =
+    Runner.git
+      [ "diff"; "--no-color"; "-M"; base ^ "...HEAD"; "--"; Runner.literal path ]
+  in
+  parse_off_thread output
+;;

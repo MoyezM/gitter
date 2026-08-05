@@ -9,7 +9,14 @@ type payload =
   ; new_hl : Highlight.t
   }
 
-type key = string * [ `Staged | `Unstaged ]
+type side =
+  [ `Staged
+  | `Unstaged
+  | `Committed of string
+  ]
+[@@deriving equal]
+
+type key = string * side [@@deriving equal]
 type result = (key * payload Or_error.t) option
 
 type t = { generation : int ref }
@@ -44,6 +51,10 @@ let fetch_text ((path, side) : key) =
       ( Git.Queries.diff_staged path
       , or_empty (Git.Queries.file_at_head path)
       , or_empty (Git.Queries.file_in_index path) )
+    | `Committed base ->
+      ( Git.Queries.diff_committed ~base path
+      , or_empty (Git.Queries.file_at_base ~base path)
+      , or_empty (Git.Queries.file_at_head path) )
   in
   let%bind diff in
   let%bind old_content in

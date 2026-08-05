@@ -19,6 +19,7 @@ let layout_tree ~(data : Git_data.t) ~discard ~commit ~copy_path =
     match selection with
     | Some (path, `Staged) -> path ^ " (staged)"
     | Some (path, `Unstaged) -> path
+    | Some (path, `Committed base) -> sprintf "%s (vs %s)" path base
     | None -> "Diff"
   in
   let files_status rows ~empty =
@@ -42,10 +43,10 @@ let layout_tree ~(data : Git_data.t) ~discard ~commit ~copy_path =
   in
   (* +/- line totals on the right of the section title bars; hidden when
      the side has no changes. *)
-  let counts lines =
-    let%arr stat = data.diffstat in
+  let counts_view counts =
+    let%arr counts in
     let added, removed =
-      Map.fold (lines stat) ~init:(0, 0) ~f:(fun ~key:_ ~data:(a, d) (ta, td) ->
+      Map.fold counts ~init:(0, 0) ~f:(fun ~key:_ ~data:(a, d) (ta, td) ->
         ta + a, td + d)
     in
     if added = 0 && removed = 0
@@ -64,26 +65,24 @@ let layout_tree ~(data : Git_data.t) ~discard ~commit ~copy_path =
   let files_pane
         ~id
         ~title
-        ~lines
+        ~status
+        ~counts
         ~side
         ~stage
         ~unstage
         ~discard
         (section : Git_data.section_data)
-        ~empty
     =
     Layout.Component.Tree.leaf
       ~id
-      ~title:(Bonsai.return title)
-      ~title_right:(counts lines)
+      ~title
+      ~title_right:(counts_view counts)
       (Panes.Files.Component.component
-         ~status:(files_status section.rows ~empty)
+         ~status
          ~rows:section.rows
          ~cursor:section.cursor
          ~scroll:section.scroll
-         ~counts:
-           (let%arr stat = data.diffstat in
-            lines stat)
+         ~counts
          ~side
          ~stage
          ~unstage
@@ -91,6 +90,24 @@ let layout_tree ~(data : Git_data.t) ~discard ~commit ~copy_path =
          ~commit
          ~copy_path
          ~inject:section.inject)
+  in
+  (* The committed pane: this branch vs its base. *)
+  let committed_status =
+    let%arr load = data.load
+    and rows = data.committed.rows
+    and base = data.base in
+    match load with
+    | Git_data.Load.Not_loaded | Loading -> `Loading
+    | Loaded _ ->
+      (match base with
+       | None -> `Empty "no base branch"
+       | Some b -> if List.is_empty rows then `Empty ("nothing committed vs " ^ b) else `Tree)
+  in
+  let committed_title =
+    let%arr base = data.base in
+    match base with
+    | Some b -> "Committed vs " ^ b
+    | None -> "Committed"
   in
   Layout.Component.Tree.(
     split
@@ -100,26 +117,41 @@ let layout_tree ~(data : Git_data.t) ~discard ~commit ~copy_path =
             `Col
             [ ( 1.
               , files_pane
+                  ~id:"committed"
+                  ~title:committed_title
+                  ~status:committed_status
+                  ~counts:data.committed_counts
+                  ~side:`Committed
+                  ~stage:noop
+                  ~unstage:noop
+                  ~discard:noop
+                  data.committed )
+            ; ( 1.
+              , files_pane
                   ~id:"staged"
-                  ~title:"Staged"
-                  ~lines:(fun s -> s.Git_data.staged_lines)
+                  ~title:(Bonsai.return "Staged")
+                  ~status:(files_status data.staged.rows ~empty:"nothing staged")
+                  ~counts:
+                    (let%arr stat = data.diffstat in
+                     stat.Git_data.staged_lines)
                   ~side:`Staged
                   ~stage:noop
                   ~unstage:data.unstage_path
                   ~discard:noop (* staged entries don't discard *)
-                  data.staged
-                  ~empty:"nothing staged" )
+                  data.staged )
             ; ( 2.
               , files_pane
                   ~id:"changes"
-                  ~title:"Changes"
-                  ~lines:(fun s -> s.Git_data.unstaged_lines)
+                  ~title:(Bonsai.return "Changes")
+                  ~status:(files_status data.unstaged.rows ~empty:"working tree clean")
+                  ~counts:
+                    (let%arr stat = data.diffstat in
+                     stat.Git_data.unstaged_lines)
                   ~side:`Unstaged
                   ~stage:data.stage_path
                   ~unstage:noop
                   ~discard
-                  data.unstaged
-                  ~empty:"working tree clean" )
+                  data.unstaged )
             ; ( 1.
               , leaf
                   ~id:"stack"
@@ -148,6 +180,7 @@ let commands ~(layout : Layout.Component.Controls.t Bonsai.t) ~refresh ~commit =
           [ Action { key = 'z'; label = "zoom"; effect = layout.toggle_zoom }
           ; Action { key = 'n'; label = "next pane"; effect = layout.focus_next }
           ; Action { key = 's'; label = "toggle stack"; effect = layout.toggle_visible "stack" }
+          ; Action { key = 'c'; label = "toggle committed"; effect = layout.toggle_visible "committed" }
           ]
       }
   ; Menu.Commands.Group
@@ -164,6 +197,7 @@ let commands ~(layout : Layout.Component.Controls.t Bonsai.t) ~refresh ~commit =
 (* Context hints for the status bar: the focused pane's keys. *)
 let hints ~focused =
   match focused with
+  | "committed" -> "j/k:move  y:copy path  Space:menu  Tab:pane"
   | "staged" -> "j/k:move  u:unstage  c:commit  y:copy path  Space:menu  Tab:pane"
   | "changes" -> "j/k:move  s:stage  d:discard  c:commit  y:copy path  Tab:pane"
   | "diff" -> "j/k:move  n/p:page  h/l:pan  s/u:\u{00B1}hunk  y:copy path"
@@ -214,10 +248,10 @@ let app ~(dimensions : Dimensions.t Bonsai.t) (local_ graph)
       | Error (_ : Error.t) -> write_to_tty (Clipboard.osc52 path)
   in
   let layout_tree = layout_tree ~data ~discard ~commit ~copy_path in
-  (* The stack pane starts hidden — Space w s shows it. *)
+  (* The stack and committed panes start hidden — Space w s / w c. *)
   let layout_model, layout_inject =
     Layout.Component.state
-      ~initially_hidden:(String.Set.singleton "stack")
+      ~initially_hidden:(String.Set.of_list [ "stack"; "committed" ])
       layout_tree
       graph
   in

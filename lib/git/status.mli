@@ -35,3 +35,7 @@ end
 
 (** Parsed from the [--branch] porcelain headers; None if they're absent. *)
 val branch : string -> Branch.t option
+
+(** Parse [git diff --name-status] output into entries (letter in the
+    index slot, worktree '.'; renames keep the new path). Total. *)
+val parse_name_status : string -> Entry.t list

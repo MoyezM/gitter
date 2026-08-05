@@ -41,3 +41,16 @@ val stack : unit -> Branch_stack.Branch.t list Or_error.t Deferred.t
 val diffstat
   :  unit
   -> ((int * int) String.Map.t * (int * int) String.Map.t) Or_error.t Deferred.t
+
+(** What the branch adds over [base] (merge-base semantics): name-status
+    entries plus per-file (added, removed) counts. *)
+val committed
+  :  base:string
+  -> unit
+  -> (Status.Entry.t list * (int * int) String.Map.t) Or_error.t Deferred.t
+
+(** The merge-base blob of [path] — the base side of a committed diff. *)
+val file_at_base : base:string -> string -> string Or_error.t Deferred.t
+
+(** The committed change of [path] vs the merge-base with [base]. *)
+val diff_committed : base:string -> string -> Diff.File.t list Or_error.t Deferred.t

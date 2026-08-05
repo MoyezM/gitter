@@ -20,6 +20,6 @@ val render
   -> scroll:int (** the model's viewport offset (render clamps it) *)
   -> counts:(int * int) String.Map.t
        (** per-file (added, removed); dirs sum their subtree *)
-  -> side:[ `Staged | `Unstaged ] (** which side's status letter to show *)
+  -> side:[ `Staged | `Unstaged | `Committed ] (** which side's status letter to show *)
   -> dimensions:Dimensions.t
   -> View.t

@@ -165,3 +165,30 @@ let branch output =
     in
     Some { Branch.head; ahead; behind }
 ;;
+
+(* ---- name-status (the committed pane's entry source) ------------------- *)
+
+(* [git diff --name-status] lines: "M<TAB>path", "R100<TAB>old<TAB>new",
+   etc. Mapped into [Entry.t] with the letter in the INDEX slot (committed
+   changes are "in the index's past"), worktree '.'; renames/copies keep
+   the new path and carry [from]. Total: garbage lines are dropped. *)
+let parse_name_status output =
+  String.split_lines output
+  |> List.filter_map ~f:(fun line ->
+    match String.split line ~on:'\t' with
+    | [ code; path ] when not (String.is_empty code) ->
+      Some
+        { Entry.index = code.[0]
+        ; worktree = '.'
+        ; path = unquote path
+        ; kind = Entry.Kind.Changed
+        }
+    | [ code; from; path ] when not (String.is_empty code) ->
+      Some
+        { Entry.index = code.[0]
+        ; worktree = '.'
+        ; path = unquote path
+        ; kind = Entry.Kind.Renamed { from = unquote from }
+        }
+    | _ -> None)
+;;

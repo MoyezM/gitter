@@ -55,9 +55,7 @@ let component
       let%bind.Effect key_changed =
         Effect.of_thunk (fun () ->
           let changed =
-            not ([%equal: (string * [ `Staged | `Unstaged ]) option option]
-                   (Some selection)
-                   !last_key)
+            not ([%equal: Fetch.key option option] (Some selection) !last_key)
           in
           last_key := Some selection;
           changed)
@@ -69,7 +67,7 @@ let component
         Fetch.load fetch ~key ~set:set_result
   in
   Bonsai.Edge.on_change
-    ~equal:[%equal: (string * [ `Staged | `Unstaged ]) option * int]
+    ~equal:[%equal: Fetch.key option * int]
     ~callback
     watch
     graph;
@@ -108,8 +106,8 @@ let component
     let hunk_op ~wanted_side op =
       match selection, result with
       | Some ((path, side) as key), Some (rkey, Ok (payload : Fetch.payload))
-        when [%equal: string * [ `Staged | `Unstaged ]] key rkey
-             && [%equal: [ `Staged | `Unstaged ]] side wanted_side ->
+        when [%equal: Fetch.key] key rkey
+             && [%equal: Fetch.side] side (wanted_side :> Fetch.side) ->
         let cursor = State.effective_cursor doc model in
         (match Document.hunk_at doc ~row:cursor with
          | None -> Effect.Ignore

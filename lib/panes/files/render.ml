@@ -19,13 +19,16 @@ type status =
 
 (* Each pane shows only ITS side's letter — the staged pane the index
    letter, Changes the worktree letter (real chars as parsed: an add/add
-   conflict reads its true code, not a flattened one). *)
+   conflict reads its true code, not a flattened one), Committed the
+   name-status letter (carried in the index slot). *)
 let status_code ~with_sel ~side (entry : Git.Status.Entry.t) =
   let c, attrs =
     match side, entry.kind with
-    | _, (Untracked | Unmerged) -> entry.worktree, Theme.untracked
+    | (`Staged | `Unstaged), (Git.Status.Entry.Kind.Untracked | Unmerged) ->
+      entry.worktree, Theme.untracked
     | `Staged, (Changed | Renamed _) -> entry.index, Theme.staged
     | `Unstaged, (Changed | Renamed _) -> entry.worktree, Theme.unstaged
+    | `Committed, _ -> entry.index, [ Attr.fg Theme.blue ]
   in
   seg (with_sel attrs) (String.of_char (code_char c))
 ;;

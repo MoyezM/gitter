@@ -20,8 +20,17 @@ type payload =
 
 (** What to fetch: the file plus WHICH change of it, VSCode-style — the
     Changes pane shows worktree vs index (relative to what's staged), the
-    Staged pane shows index vs HEAD. *)
-type key = string * [ `Staged | `Unstaged ]
+    Staged pane shows index vs HEAD, the Committed pane shows merge-base
+    vs HEAD against the carried base branch (base rides the key, so a
+    base switch is a key change and resets the pane). *)
+type side =
+  [ `Staged
+  | `Unstaged
+  | `Committed of string (** the base branch *)
+  ]
+[@@deriving equal]
+
+type key = string * side [@@deriving equal]
 
 (** The stored result, tagged with the key it was fetched for. Consumers
     must check the tag against the current selection ([Render.content]

@@ -51,9 +51,15 @@ type t =
   ; refresh : unit Effect.t Bonsai.t
   ; staged : section_data
   ; unstaged : section_data
-  ; selection : (string * [ `Staged | `Unstaged ]) option Bonsai.t
+  ; committed : section_data
+  ; committed_counts : (int * int) String.Map.t Bonsai.t
+  ; base : string option Bonsai.t
+      (* the committed view's base branch (the current branch's inferred
+         parent for now; settable from the stack pane later) *)
+  ; selection : Panes.Diff.Fetch.key option Bonsai.t
       (* the active pane's file, tagged with its side — the diff pane shows
-         index-vs-HEAD for Staged and worktree-vs-index for Unstaged *)
+         index-vs-HEAD for Staged, worktree-vs-index for Unstaged, and
+         merge-base-vs-HEAD for Committed *)
   ; revision : int Bonsai.t
       (* bumped by every index mutation and refresh: content changed even
          though the selection didn't — refetch the diff *)
@@ -129,6 +135,45 @@ let create (local_ graph) =
     let%bind.Effect current = Effect.of_thunk (fun () -> !stack_generation) in
     if current = mine then set_stack result else Effect.Ignore
   in
+  (* The committed view: this branch vs its inferred base (the stack's
+     parent of current). Entries + per-file counts land together; a base
+     change refetches via the on_change below. *)
+  let base =
+    let%arr stack in
+    match stack with
+    | Ok branches -> Git.Branch_stack.parent_of_current branches
+    | Error (_ : Error.t) -> None
+  in
+  let committed_state, set_committed = Bonsai.state ([], String.Map.empty) graph in
+  let committed_generation = ref 0 in
+  let fetch_committed =
+    let%arr set_committed and base in
+    let%bind.Effect mine =
+      Effect.of_thunk (fun () ->
+        incr committed_generation;
+        !committed_generation)
+    in
+    let%bind.Effect result =
+      match base with
+      | None -> Effect.return (Ok ([], String.Map.empty))
+      | Some base -> Effect.of_deferred_thunk (fun () -> Git.Queries.committed ~base ())
+    in
+    let%bind.Effect current = Effect.of_thunk (fun () -> !committed_generation) in
+    if current = mine
+    then
+      set_committed
+        (match result with
+         | Ok r -> r
+         | Error (_ : Error.t) -> [], String.Map.empty)
+    else Effect.Ignore
+  in
+  Bonsai.Edge.on_change
+    ~equal:[%equal: string option]
+    ~callback:
+      (let%arr fetch_committed in
+       fun (_ : string option) -> fetch_committed)
+    base
+    graph;
   (* Only the FIRST load shows the loading message. *)
   let fetch =
     let%arr load and set_load and fetch_now and fetch_stack in
@@ -138,16 +183,12 @@ let create (local_ graph) =
   in
   Bonsai.Edge.before_display fetch graph;
   let refresh =
-    let%arr fetch_now and fetch_stack in
-    Effect.Many [ fetch_now; fetch_stack ]
+    let%arr fetch_now and fetch_stack and fetch_committed in
+    Effect.Many [ fetch_now; fetch_stack; fetch_committed ]
   in
   (* Whichever pane acted last owns the selection. *)
   let active, set_active = Bonsai.state `Unstaged graph in
-  let section ~which ~filter =
-    let entries =
-      let%arr load in
-      List.filter (entries_of_load load) ~f:filter
-    in
+  let section ~which ~entries =
     let model, inject =
       Bonsai.state_machine_with_input
         ~default_model:Panes.Files.State.Model.initial
@@ -197,19 +238,42 @@ let create (local_ graph) =
     let selection =
       let%arr rows and cursor in
       Panes.Files.State.selection rows ~cursor
-      |> Option.map ~f:(fun path -> path, which)
     in
     { rows; cursor; scroll; inject }, selection
   in
-  let staged, staged_selection = section ~which:`Staged ~filter:Panes.Files.Sections.is_staged in
+  let filtered filter =
+    let%arr load in
+    List.filter (entries_of_load load) ~f:filter
+  in
+  let staged, staged_selection =
+    section ~which:`Staged ~entries:(filtered Panes.Files.Sections.is_staged)
+  in
   let unstaged, unstaged_selection =
-    section ~which:`Unstaged ~filter:Panes.Files.Sections.is_unstaged
+    section ~which:`Unstaged ~entries:(filtered Panes.Files.Sections.is_unstaged)
+  in
+  let committed, committed_selection =
+    section
+      ~which:`Committed
+      ~entries:
+        (let%arr committed_state in
+         fst committed_state)
+  in
+  let committed_counts =
+    let%arr committed_state in
+    snd committed_state
   in
   let selection =
-    let%arr active and staged_selection and unstaged_selection in
+    let%arr active
+    and staged_selection
+    and unstaged_selection
+    and committed_selection
+    and base in
     match active with
-    | `Staged -> staged_selection
-    | `Unstaged -> unstaged_selection
+    | `Staged -> Option.map staged_selection ~f:(fun p -> p, `Staged)
+    | `Unstaged -> Option.map unstaged_selection ~f:(fun p -> p, `Unstaged)
+    | `Committed ->
+      Option.both committed_selection base
+      |> Option.map ~f:(fun (p, b) -> p, `Committed b)
   in
   let revision, bump_revision =
     Bonsai.state_machine
@@ -275,7 +339,7 @@ let create (local_ graph) =
      explicit fetches via the generation check. *)
   let peek_selection = Bonsai.peek selection graph in
   let poll =
-    let%arr set_load and bump_revision and peek_selection and fetch_stack in
+    let%arr set_load and bump_revision and peek_selection and fetch_stack and fetch_committed in
     let%bind.Effect mine = Effect.of_thunk (fun () -> !generation) in
     let%bind.Effect selected = peek_selection in
     let selected_path =
@@ -333,6 +397,7 @@ let create (local_ graph) =
             (Loaded (Or_error.map status ~f:(fun (_raw, entries, branch) -> entries, branch)))
         ; bump_revision ()
         ; fetch_stack
+        ; fetch_committed
         ]
   in
   Bonsai.Clock.every
@@ -357,5 +422,8 @@ let create (local_ graph) =
   ; notice
   ; stack
   ; diffstat
+  ; committed
+  ; committed_counts
+  ; base
   }
 ;;

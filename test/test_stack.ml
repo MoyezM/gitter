@@ -281,4 +281,23 @@ let () =
     ([%equal: string option] (PS.selection_key m2) (Some "main//codex"))
 ;;
 
+
+(* parent_of_current: the committed view's default base. *)
+let () =
+  let branches =
+    Stack.parse
+      ~heads:"main\tM\na\tA\nb\tB"
+      ~dag:"B A\nA M"
+      ~reflogs:""
+      ~trunk:"main"
+      ~current:(Some "b")
+  in
+  check "parent of current"
+    ([%equal: string option] (Stack.parent_of_current branches) (Some "a"));
+  let on_trunk =
+    Stack.parse ~heads:"main\tM" ~dag:"" ~reflogs:"" ~trunk:"main" ~current:(Some "main")
+  in
+  check "trunk has no base" (Option.is_none (Stack.parent_of_current on_trunk))
+;;
+
 let () = print_endline "All stack tests passed."

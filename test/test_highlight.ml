@@ -85,7 +85,11 @@ let () =
   let t = session ~path:"a.toml" "[section]\nkey = 1\n" in
   check "toml: session exists" (not (H.is_empty t));
   let t = session ~path:"a.md" "# Title\n" in
-  check "markdown: session exists" (not (H.is_empty t))
+  check "markdown: session exists" (not (H.is_empty t));
+  let t = session ~path:"a.nix" "let x = 1; in { inherit x; }\n" in
+  check "nix: keyword" (has ~capture:"keyword" (line t 1));
+  let t = session ~path:"gitter.opam" "opam-version: \"2.0\"\ndepends: [ \"dune\" ]\n" in
+  check "opam: session exists" (not (H.is_empty t))
 ;;
 
 (* Every registered grammar must have a loadable query: force each one so

@@ -25,6 +25,8 @@ let find = function
   | "jsx" -> Some { language = Gitter_grammar_javascript.language; highlights_query = Gitter_grammar_javascript.highlights_query }
   | "md" -> Some { language = Gitter_grammar_markdown.language; highlights_query = Gitter_grammar_markdown.highlights_query }
   | "markdown" -> Some { language = Gitter_grammar_markdown.language; highlights_query = Gitter_grammar_markdown.highlights_query }
+  | "nix" -> Some { language = Gitter_grammar_nix.language; highlights_query = Gitter_grammar_nix.highlights_query }
+  | "opam" -> Some { language = Gitter_grammar_opam.language; highlights_query = Gitter_grammar_opam.highlights_query }
   | "py" -> Some { language = Gitter_grammar_python.language; highlights_query = Gitter_grammar_python.highlights_query }
   | "rs" -> Some { language = Gitter_grammar_rust.language; highlights_query = Gitter_grammar_rust.highlights_query }
   | "toml" -> Some { language = Gitter_grammar_toml.language; highlights_query = Gitter_grammar_toml.highlights_query }
@@ -58,6 +60,8 @@ let extensions =
     "jsx";
     "md";
     "markdown";
+    "nix";
+    "opam";
     "py";
     "rs";
     "toml";

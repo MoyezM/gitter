@@ -63,13 +63,22 @@ let count_segs ~with_sel = function
 (* Row shape, lazygit-style: the whole row indents together, so the status
    code sits immediately beside its name instead of in a detached column;
    +/- counts sit right-aligned (dropped when the name leaves no room). *)
-let row ~width ~counts ~selected ~side (r : Tree.row) =
+let row ~width ~counts ~reviewed ~selected ~side (r : Tree.row) =
   let with_sel attrs = if selected then Theme.selection_bg :: attrs else attrs in
   let marker =
     if selected then seg (with_sel Theme.header) "\u{276F} " else seg (with_sel []) "  "
   in
   let indent depth = seg (with_sel []) (String.make (2 * depth) ' ') in
-  let stats, stats_w = count_segs ~with_sel (row_counts ~counts r) in
+  let is_reviewed = Set.mem reviewed (State.row_key r) in
+  let stats, stats_w =
+    let stats, stats_w = count_segs ~with_sel (row_counts ~counts r) in
+    (* Reviewed rows carry a check at the far right and recede visually
+       — reviewed means done. *)
+    if is_reviewed
+    then stats @ [ seg (with_sel [ Attr.fg Theme.green ]) "\u{2713} " ], stats_w + 2
+    else stats, stats_w
+  in
+  let dim attrs = if is_reviewed then Theme.context else attrs in
   let filled ~used segs =
     let fill = width - used - stats_w in
     if fill >= 1
@@ -82,7 +91,7 @@ let row ~width ~counts ~selected ~side (r : Tree.row) =
     (* arrow+space is 2 cells (String.length would overcount the glyph). *)
     filled
       ~used:(2 + (2 * depth) + 2 + String.length name)
-      [ marker; indent depth; seg (with_sel Theme.header) (arrow ^ name) ]
+      [ marker; indent depth; seg (with_sel (dim Theme.header)) (arrow ^ name) ]
   | File { entry; name; depth } ->
     let label =
       match entry.kind with
@@ -95,11 +104,11 @@ let row ~width ~counts ~selected ~side (r : Tree.row) =
       ; indent depth
       ; status_code ~with_sel ~side entry
       ; seg (with_sel []) " "
-      ; seg (with_sel [ Attr.fg Theme.text ]) label
+      ; seg (with_sel (dim [ Attr.fg Theme.text ])) label
       ]
 ;;
 
-let render ~(status : status) ~rows ~cursor ~scroll ~counts ~side ~(dimensions : Dimensions.t) =
+let render ~(status : status) ~rows ~cursor ~scroll ~counts ~reviewed ~side ~(dimensions : Dimensions.t) =
   match status with
   | `Loading -> seg Theme.context " loading git status..."
   | `Error e -> seg Theme.untracked (" git error: " ^ Error.to_string_hum e)
@@ -110,5 +119,5 @@ let render ~(status : status) ~rows ~cursor ~scroll ~counts ~side ~(dimensions :
       ~scroll
       ~cursor
       ~dimensions
-      ~row:(fun ~selected ~width r -> row ~width ~counts ~selected ~side r)
+      ~row:(fun ~selected ~width r -> row ~width ~counts ~reviewed ~selected ~side r)
 ;;

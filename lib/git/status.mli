@@ -36,6 +36,8 @@ end
 (** Parsed from the [--branch] porcelain headers; None if they're absent. *)
 val branch : string -> Branch.t option
 
-(** Parse [git diff --name-status] output into entries (letter in the
-    index slot, worktree '.'; renames keep the new path). Total. *)
-val parse_name_status : string -> Entry.t list
+(** Parse [git diff --raw --no-abbrev] output into entries (status letter
+    in the index slot, worktree '.'; renames keep the new path) paired
+    with (old blob, new blob) — the content-addressed review-mark key.
+    Total. *)
+val parse_raw : string -> (Entry.t * (string * string)) list

@@ -14,19 +14,21 @@ let component
       ~cursor
       ~scroll
       ~counts
+      ~reviewed
       ~side
       ~stage
       ~unstage
       ~discard
       ~commit
       ~copy_path
+      ~toggle_review
       ~inject
   : Widget.t
   =
   fun ~dimensions (local_ _graph) ->
   let view =
-    let%arr status and rows and cursor and scroll and counts and dimensions in
-    Render.render ~status ~rows ~cursor ~scroll ~counts ~side ~dimensions
+    let%arr status and rows and cursor and scroll and counts and reviewed and dimensions in
+    Render.render ~status ~rows ~cursor ~scroll ~counts ~reviewed ~side ~dimensions
   in
   let handler =
     let%arr inject
@@ -38,6 +40,7 @@ let component
     and discard
     and commit
     and copy_path
+    and toggle_review
     and dimensions in
     (* s/u act on the row under the cursor: a file's path, or a directory's
        whole subtree (git pathspecs make that the same operation). *)
@@ -56,6 +59,7 @@ let component
       | Key_press { key = ASCII 'd'; mods = [] } -> operate discard
       | Key_press { key = ASCII 'c'; mods = [] } -> commit
       | Key_press { key = ASCII 'y'; mods = [] } -> operate copy_path
+      | Key_press { key = ASCII 'r'; mods = [] } -> operate toggle_review
       | Key_press { key = ASCII 'j'; mods = [] }
       | Key_press { key = Arrow `Down; mods = [] } ->
         inject (State.Action.Move { dir = `Down; height })

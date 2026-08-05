@@ -166,29 +166,35 @@ let branch output =
     Some { Branch.head; ahead; behind }
 ;;
 
-(* ---- name-status (the committed pane's entry source) ------------------- *)
+(* ---- raw diff (the committed pane's entry source) ----------------------- *)
 
-(* [git diff --name-status] lines: "M<TAB>path", "R100<TAB>old<TAB>new",
-   etc. Mapped into [Entry.t] with the letter in the INDEX slot (committed
-   changes are "in the index's past"), worktree '.'; renames/copies keep
-   the new path and carry [from]. Total: garbage lines are dropped. *)
-let parse_name_status output =
+(* [git diff --raw --no-abbrev] lines:
+   ":<old mode> <new mode> <old blob> <new blob> <status><TAB>path" with a
+   second TAB-separated path for renames/copies. Mapped into [Entry.t]
+   (status letter in the INDEX slot, worktree '.'; renames keep the new
+   path and carry [from]) plus the BLOB PAIR — the content-addressed key
+   the review marks are stored under (survives restacks that don't touch
+   the file; self-invalidates when either side changes). Total: garbage
+   lines are dropped. *)
+let parse_raw output =
   String.split_lines output
   |> List.filter_map ~f:(fun line ->
-    match String.split line ~on:'\t' with
-    | [ code; path ] when not (String.is_empty code) ->
-      Some
-        { Entry.index = code.[0]
-        ; worktree = '.'
-        ; path = unquote path
-        ; kind = Entry.Kind.Changed
-        }
-    | [ code; from; path ] when not (String.is_empty code) ->
-      Some
-        { Entry.index = code.[0]
-        ; worktree = '.'
-        ; path = unquote path
-        ; kind = Entry.Kind.Renamed { from = unquote from }
-        }
-    | _ -> None)
+    match String.chop_prefix line ~prefix:":" with
+    | None -> None
+    | Some line ->
+      (match String.split line ~on:'\t' with
+       | header :: paths ->
+         (match String.split header ~on:' ' |> List.filter ~f:(Fn.non String.is_empty), paths with
+          | [ _old_mode; _new_mode; old_blob; new_blob; status ], ([ path ] | [ _; path ])
+            when not (String.is_empty status) ->
+            let kind =
+              match status.[0], paths with
+              | ('R' | 'C'), from :: _ :: _ -> Entry.Kind.Renamed { from = unquote from }
+              | _ -> Entry.Kind.Changed
+            in
+            Some
+              ( { Entry.index = status.[0]; worktree = '.'; path = unquote path; kind }
+              , (old_blob, new_blob) )
+          | _ -> None)
+       | [] -> None))
 ;;

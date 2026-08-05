@@ -20,6 +20,7 @@ module Action = struct
     | Focus_next
     | Toggle_zoom
     | Toggle_visible of string
+    | Set_hidden of String.Set.t (* visibility preset; keeps focus valid *)
     | Start_drag of string
     | Set_frac of string * float
     | End_drag
@@ -59,6 +60,12 @@ let apply_action ~leaf_ids _ctx (model : Model.t) (action : Action.t) : Model.t 
       else if String.equal model.focused id
       then { model with hidden; focused = next_visible ~leaf_ids ~hidden ~from:id }
       else { model with hidden })
+  | Set_hidden hidden ->
+    if List.for_all leaf_ids ~f:(Set.mem hidden)
+    then model (* never hide everything *)
+    else if Set.mem hidden model.focused
+    then { model with hidden; focused = next_visible ~leaf_ids ~hidden ~from:model.focused }
+    else { model with hidden }
   | Start_drag path -> { model with dragging = Some path }
   | Set_frac (path, frac) ->
     { model with fractions = Map.set model.fractions ~key:path ~data:frac }

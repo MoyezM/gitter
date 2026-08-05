@@ -62,11 +62,15 @@ let layout_tree ~(data : Git_data.t) ~discard ~commit ~copy_path =
            ])
   in
   let noop = Bonsai.return (fun (_ : string) -> Effect.Ignore) in
+  let no_reviews = Bonsai.return String.Set.empty in
   let files_pane
         ~id
         ~title
+        ~title_right
         ~status
         ~counts
+        ~reviewed
+        ~toggle_review
         ~side
         ~stage
         ~unstage
@@ -76,19 +80,21 @@ let layout_tree ~(data : Git_data.t) ~discard ~commit ~copy_path =
     Layout.Component.Tree.leaf
       ~id
       ~title
-      ~title_right:(counts_view counts)
+      ~title_right
       (Panes.Files.Component.component
          ~status
          ~rows:section.rows
          ~cursor:section.cursor
          ~scroll:section.scroll
          ~counts
+         ~reviewed
          ~side
          ~stage
          ~unstage
          ~discard
          ~commit
          ~copy_path
+         ~toggle_review
          ~inject:section.inject)
   in
   (* The committed pane: this branch vs its base. *)
@@ -109,6 +115,25 @@ let layout_tree ~(data : Git_data.t) ~discard ~commit ~copy_path =
     | Some b -> "Committed vs " ^ b
     | None -> "Committed"
   in
+  (* The committed title bar carries counts plus review progress. *)
+  let committed_title_right =
+    let%arr counts = counts_view data.committed_counts
+    and reviewed, total = data.review_progress in
+    let progress =
+      if total = 0
+      then None
+      else
+        Some
+          (View.text
+             ~attrs:(if reviewed = total then [ Attr.fg Theme.green ] else Theme.context)
+             (sprintf "\u{2713}%d/%d " reviewed total))
+    in
+    match counts, progress with
+    | None, None -> None
+    | Some c, None -> Some c
+    | None, Some p -> Some (View.hcat [ View.text " "; p ])
+    | Some c, Some p -> Some (View.hcat [ c; p ])
+  in
   Layout.Component.Tree.(
     split
       `Row
@@ -119,8 +144,11 @@ let layout_tree ~(data : Git_data.t) ~discard ~commit ~copy_path =
               , files_pane
                   ~id:"committed"
                   ~title:committed_title
+                  ~title_right:committed_title_right
                   ~status:committed_status
                   ~counts:data.committed_counts
+                  ~reviewed:data.reviewed
+                  ~toggle_review:data.toggle_review
                   ~side:`Committed
                   ~stage:noop
                   ~unstage:noop
@@ -130,10 +158,16 @@ let layout_tree ~(data : Git_data.t) ~discard ~commit ~copy_path =
               , files_pane
                   ~id:"staged"
                   ~title:(Bonsai.return "Staged")
+                  ~title_right:
+                    (counts_view
+                       (let%arr stat = data.diffstat in
+                        stat.Git_data.staged_lines))
                   ~status:(files_status data.staged.rows ~empty:"nothing staged")
                   ~counts:
                     (let%arr stat = data.diffstat in
                      stat.Git_data.staged_lines)
+                  ~reviewed:no_reviews
+                  ~toggle_review:noop
                   ~side:`Staged
                   ~stage:noop
                   ~unstage:data.unstage_path
@@ -143,10 +177,16 @@ let layout_tree ~(data : Git_data.t) ~discard ~commit ~copy_path =
               , files_pane
                   ~id:"changes"
                   ~title:(Bonsai.return "Changes")
+                  ~title_right:
+                    (counts_view
+                       (let%arr stat = data.diffstat in
+                        stat.Git_data.unstaged_lines))
                   ~status:(files_status data.unstaged.rows ~empty:"working tree clean")
                   ~counts:
                     (let%arr stat = data.diffstat in
                      stat.Git_data.unstaged_lines)
+                  ~reviewed:no_reviews
+                  ~toggle_review:noop
                   ~side:`Unstaged
                   ~stage:data.stage_path
                   ~unstage:noop
@@ -184,6 +224,16 @@ let commands ~(layout : Layout.Component.Controls.t Bonsai.t) ~refresh ~commit =
           ; Action { key = 'n'; label = "next pane"; effect = layout.focus_next }
           ; Action { key = 's'; label = "toggle stack"; effect = layout.toggle_visible "stack" }
           ; Action { key = 'c'; label = "toggle committed"; effect = layout.toggle_visible "committed" }
+          ; Action
+              { key = 'r'
+              ; label = "review layout"
+              ; effect = layout.set_hidden (String.Set.of_list [ "staged"; "changes" ])
+              }
+          ; Action
+              { key = 'w'
+              ; label = "work layout"
+              ; effect = layout.set_hidden (String.Set.of_list [ "stack"; "committed" ])
+              }
           ]
       }
   ; Menu.Commands.Group
@@ -200,7 +250,7 @@ let commands ~(layout : Layout.Component.Controls.t Bonsai.t) ~refresh ~commit =
 (* Context hints for the status bar: the focused pane's keys. *)
 let hints ~focused =
   match focused with
-  | "committed" -> "j/k:move  y:copy path  Space:menu  Tab:pane"
+  | "committed" -> "j/k:move  r:reviewed  y:copy path  Space:menu  Tab:pane"
   | "staged" -> "j/k:move  u:unstage  c:commit  y:copy path  Space:menu  Tab:pane"
   | "changes" -> "j/k:move  s:stage  d:discard  c:commit  y:copy path  Tab:pane"
   | "diff" -> "j/k:move  n/p:page  h/l:pan  s/u:\u{00B1}hunk  y:copy path"

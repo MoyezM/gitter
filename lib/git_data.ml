@@ -53,6 +53,10 @@ type t =
   ; unstaged : section_data
   ; committed : section_data
   ; committed_counts : (int * int) String.Map.t Bonsai.t
+  ; reviewed : String.Set.t Bonsai.t
+      (* row keys (files and fully-reviewed dirs) to show checked *)
+  ; review_progress : (int * int) Bonsai.t (* reviewed, total *)
+  ; toggle_review : (string -> unit Effect.t) Bonsai.t
   ; base : string option Bonsai.t
       (* the committed view's base branch: the Enter-chosen override when
          that branch still exists, else the current branch's inferred
@@ -161,7 +165,9 @@ let create (local_ graph) =
     let%arr set_base_override in
     fun branch -> set_base_override (Some branch)
   in
-  let committed_state, set_committed = Bonsai.state ([], String.Map.empty) graph in
+  let committed_state, set_committed =
+    Bonsai.state ([], String.Map.empty, String.Map.empty) graph
+  in
   let committed_generation = ref 0 in
   let fetch_committed =
     let%arr set_committed and base in
@@ -172,7 +178,7 @@ let create (local_ graph) =
     in
     let%bind.Effect result =
       match base with
-      | None -> Effect.return (Ok ([], String.Map.empty))
+      | None -> Effect.return (Ok ([], String.Map.empty, String.Map.empty))
       | Some base -> Effect.of_deferred_thunk (fun () -> Git.Queries.committed ~base ())
     in
     let%bind.Effect current = Effect.of_thunk (fun () -> !committed_generation) in
@@ -181,7 +187,7 @@ let create (local_ graph) =
       set_committed
         (match result with
          | Ok r -> r
-         | Error (_ : Error.t) -> [], String.Map.empty)
+         | Error (_ : Error.t) -> [], String.Map.empty, String.Map.empty)
     else Effect.Ignore
   in
   Bonsai.Edge.on_change
@@ -191,11 +197,28 @@ let create (local_ graph) =
        fun (_ : string option) -> fetch_committed)
     base
     graph;
+  let notice, set_notice = Bonsai.state None graph in
+  (* Review marks, keyed by the content pair (old blob, new blob) — the
+     spec's design: a mark survives restacks that don't touch the file and
+     self-invalidates the moment either side's content changes (a stale
+     mark simply matches nothing; no invalidation logic exists anywhere).
+     In-memory set here; the store loads/persists it. *)
+  let marks, set_marks = Bonsai.state String.Set.empty graph in
+  let mark_key (old_blob, new_blob) = old_blob ^ ":" ^ new_blob in
+  let load_marks =
+    let%arr set_marks and set_notice in
+    let%bind.Effect stored = Effect.of_deferred_thunk (fun () -> Review_store.load ()) in
+    match stored with
+    | Ok pairs -> set_marks (String.Set.of_list (List.map pairs ~f:mark_key))
+    | Error e ->
+      set_notice (Some (String.prefix (Error.to_string_hum e) 80))
+  in
   (* Only the FIRST load shows the loading message. *)
   let fetch =
-    let%arr load and set_load and fetch_now and fetch_stack in
+    let%arr load and set_load and fetch_now and fetch_stack and load_marks in
     match load with
-    | Load.Not_loaded -> Effect.Many [ set_load Loading; fetch_now; fetch_stack ]
+    | Load.Not_loaded ->
+      Effect.Many [ set_load Loading; fetch_now; fetch_stack; load_marks ]
     | Loading | Loaded _ -> Effect.Ignore
   in
   Bonsai.Edge.before_display fetch graph;
@@ -273,11 +296,93 @@ let create (local_ graph) =
       ~which:`Committed
       ~entries:
         (let%arr committed_state in
-         fst committed_state)
+         let entries, _, _ = committed_state in
+         entries)
   in
   let committed_counts =
     let%arr committed_state in
-    snd committed_state
+    let _, counts, _ = committed_state in
+    counts
+  in
+  let committed_blobs =
+    let%arr committed_state in
+    let _, _, blobs = committed_state in
+    blobs
+  in
+  (* Reviewed DISPLAY keys: file paths whose pair is marked, plus dir
+     paths whose entire subtree is marked (so collapsed dirs read
+     correctly). *)
+  let reviewed =
+    let%arr committed_blobs and marks in
+    let reviewed_file path =
+      match Map.find committed_blobs path with
+      | Some pair -> Set.mem marks (mark_key pair)
+      | None -> false
+    in
+    let files = Map.keys committed_blobs in
+    let dirs =
+      List.concat_map files ~f:(fun path ->
+        let parts = String.split path ~on:'/' in
+        List.init
+          (List.length parts - 1)
+          ~f:(fun i -> String.concat ~sep:"/" (List.take parts (i + 1))))
+      |> List.dedup_and_sort ~compare:String.compare
+    in
+    let reviewed_dirs =
+      List.filter dirs ~f:(fun d ->
+        let prefix = d ^ "/" in
+        let under = List.filter files ~f:(String.is_prefix ~prefix) in
+        (not (List.is_empty under)) && List.for_all under ~f:reviewed_file
+      )
+    in
+    String.Set.of_list (List.filter files ~f:reviewed_file @ reviewed_dirs)
+  in
+  let review_progress =
+    let%arr committed_blobs and marks in
+    let total = Map.length committed_blobs in
+    let done_ =
+      Map.count committed_blobs ~f:(fun pair -> Set.mem marks (mark_key pair))
+    in
+    done_, total
+  in
+  (* Toggle a file, or a whole directory (all-marked folds back to none —
+     the same all-or-nothing rule as staging a dir). *)
+  let toggle_review =
+    let%arr marks and set_marks and set_notice and committed_blobs in
+    fun path ->
+      let keys =
+        match Map.find committed_blobs path with
+        | Some pair -> [ mark_key pair ]
+        | None ->
+          let prefix = path ^ "/" in
+          Map.fold committed_blobs ~init:[] ~f:(fun ~key ~data acc ->
+            if String.is_prefix key ~prefix then mark_key data :: acc else acc)
+      in
+      match keys with
+      | [] -> Effect.Ignore
+      | _ ->
+        let all_marked = List.for_all keys ~f:(Set.mem marks) in
+        let marks =
+          if all_marked
+          then List.fold keys ~init:marks ~f:Set.remove
+          else List.fold keys ~init:marks ~f:Set.add
+        in
+        let pairs =
+          List.filter_map keys ~f:(fun k -> String.lsplit2 k ~on:':')
+        in
+        (* Optimistic: the set updates now, the store catches up; a store
+           failure surfaces in the status bar (marks revert on restart —
+           honest about what persisted). *)
+        Effect.Many
+          [ set_marks marks
+          ; (let%bind.Effect written =
+               Effect.of_deferred_thunk (fun () ->
+                 Review_store.set ~pairs ~reviewed:(not all_marked))
+             in
+             match written with
+             | Ok () -> Effect.Ignore
+             | Error e -> set_notice (Some (String.prefix (Error.to_string_hum e) 80)))
+          ]
   in
   let selection =
     let%arr active
@@ -298,7 +403,6 @@ let create (local_ graph) =
       ~apply_action:(fun _ctx revision () -> revision + 1)
       graph
   in
-  let notice, set_notice = Bonsai.state None graph in
   (* An index mutation, then resync: the status reloads and [revision] tells
      the diff pane its content is stale. Failures surface in the status bar
      (first line only) and clear on the next success; the refresh runs
@@ -441,6 +545,9 @@ let create (local_ graph) =
   ; diffstat
   ; committed
   ; committed_counts
+  ; reviewed
+  ; review_progress
+  ; toggle_review
   ; base
   ; set_base
   }

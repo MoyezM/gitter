@@ -22,11 +22,14 @@ val component
   -> scroll:int Bonsai.t
   -> counts:(int * int) String.Map.t Bonsai.t
        (** per-file (added, removed) for this side; dirs sum their subtree *)
+  -> reviewed:String.Set.t Bonsai.t
+       (** row keys shown checked; [r] runs [toggle_review] on the row *)
   -> side:[ `Staged | `Unstaged | `Committed ]
   -> stage:(string -> unit Effect.t) Bonsai.t
   -> unstage:(string -> unit Effect.t) Bonsai.t
   -> discard:(string -> unit Effect.t) Bonsai.t
   -> commit:unit Effect.t Bonsai.t
   -> copy_path:(string -> unit Effect.t) Bonsai.t
+  -> toggle_review:(string -> unit Effect.t) Bonsai.t
   -> inject:(State.Action.t -> unit Effect.t) Bonsai.t
   -> Widget.t

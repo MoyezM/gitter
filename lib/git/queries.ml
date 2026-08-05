@@ -190,17 +190,21 @@ let diffstat () =
 (* ---- the committed view (this branch vs its base) ---------------------- *)
 
 (* What the branch adds over [base], merge-base semantics (the three-dot
-   range): entries plus per-file +/- counts. A missing/unrelated base
-   yields empty — the pane shows its idle message. *)
+   range): entries, per-file +/- counts, and each file's (old blob, new
+   blob) pair — the review-mark key. A missing/unrelated base yields
+   empty — the pane shows its idle message. *)
 let committed ~base () =
   let range = base ^ "...HEAD" in
   let open Deferred.Or_error.Let_syntax in
-  let%bind names =
-    Runner.git [ "diff"; "--no-color"; "--name-status"; "-M"; range ]
+  let%bind raw =
+    Runner.git [ "diff"; "--no-color"; "--raw"; "--no-abbrev"; "-M"; range ]
   in
   let%map stats = Runner.git [ "diff"; "--no-color"; "--numstat"; "-M"; range ] in
-  ( Status.parse_name_status names
-  , Diff.numstat stats |> String.Map.of_alist_reduce ~f:(fun first _ -> first) )
+  let parsed = Status.parse_raw raw in
+  ( List.map parsed ~f:fst
+  , Diff.numstat stats |> String.Map.of_alist_reduce ~f:(fun first _ -> first)
+  , List.map parsed ~f:(fun (e, blobs) -> e.Status.Entry.path, blobs)
+    |> String.Map.of_alist_reduce ~f:(fun first _ -> first) )
 ;;
 
 (* The two blob sides of a committed file diff, for highlighting: the

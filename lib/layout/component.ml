@@ -125,6 +125,7 @@ module Controls = struct
     { focus_next : unit Effect.t
     ; toggle_zoom : unit Effect.t
     ; toggle_visible : string -> unit Effect.t
+    ; set_hidden : String.Set.t -> unit Effect.t (* visibility preset *)
     }
 end
 
@@ -133,6 +134,7 @@ let controls ~inject =
   { Controls.focus_next = inject State.Action.Focus_next
   ; toggle_zoom = inject State.Action.Toggle_zoom
   ; toggle_visible = (fun id -> inject (State.Action.Toggle_visible id))
+  ; set_hidden = (fun hidden -> inject (State.Action.Set_hidden hidden))
   }
 ;;
 

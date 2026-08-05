@@ -189,15 +189,28 @@ let () =
 ;;
 
 
-(* name-status: the committed pane's entry source. *)
+(* raw diff: the committed pane's entry + mark-key source. *)
 let () =
-  let out = "M\tlib/app.ml\nA\tnew.ml\nD\tgone.ml\nR100\told.ml\tnew_name.ml\nT\tlink\n" in
-  let entries = Gitter.Git.Status.parse_name_status out in
+  let o40 = String.make 40 'a'
+  and n40 = String.make 40 'b' in
+  let out =
+    String.concat
+      ~sep:"\n"
+      [ sprintf ":100644 100644 %s %s M\tlib/app.ml" o40 n40
+      ; sprintf ":000000 100644 %s %s A\tnew.ml" (String.make 40 '0') n40
+      ; sprintf ":100644 100644 %s %s R100\told.ml\tnew_name.ml" o40 n40
+      ; "garbage line"
+      ]
+  in
+  let parsed = Gitter.Git.Status.parse_raw out in
+  let entries = List.map parsed ~f:fst in
   let letters = List.map entries ~f:(fun e -> e.Gitter.Git.Status.Entry.index) in
   let paths = List.map entries ~f:(fun e -> e.Gitter.Git.Status.Entry.path) in
-  check "name-status letters" ([%equal: char list] letters [ 'M'; 'A'; 'D'; 'R'; 'T' ]);
-  check "name-status paths (rename keeps new)"
-    ([%equal: string list] paths [ "lib/app.ml"; "new.ml"; "gone.ml"; "new_name.ml"; "link" ]);
+  check "raw letters" ([%equal: char list] letters [ 'M'; 'A'; 'R' ]);
+  check "raw paths (rename keeps new)"
+    ([%equal: string list] paths [ "lib/app.ml"; "new.ml"; "new_name.ml" ]);
+  check "raw blob pairs"
+    ([%equal: (string * string) list] (List.map parsed ~f:snd) [ o40, n40; String.make 40 '0', n40; o40, n40 ]);
   check "rename carries from"
     (List.exists entries ~f:(fun e ->
        match e.kind with

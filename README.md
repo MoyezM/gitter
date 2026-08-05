@@ -3,6 +3,26 @@
 A git TUI built with [bonsai_term](https://github.com/janestreet/bonsai_term)
 (Jane Street's Bonsai for terminals). See `SPEC.md` for the product spec.
 
+## Install
+
+macOS (Apple Silicon):
+
+```sh
+brew install MoyezM/tap/gitter
+```
+
+or:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/MoyezM/gitter/main/scripts/install.sh | bash
+```
+
+or grab a tarball from the
+[releases page](https://github.com/MoyezM/gitter/releases).
+
+Prebuilt binaries only — building from source needs the OxCaml toolchain (see
+[Toolchain](#toolchain)).
+
 ## Toolchain
 
 bonsai_term requires the [OxCaml](https://oxcaml.org) compiler (it uses labeled

@@ -45,4 +45,10 @@ For the record, resolved in the tech-debt sweep:
   unbounded only in theory).
 - Stack inference needs REFLOGS to re-associate a child with an amended
   parent — fresh clones (no reflog history) degrade to trunk-child until
-  the next restack.
+  the next restack. Promoted by distribution: every outside user starts
+  from a fresh clone, so this is their day-one experience.
+- Distribution gaps: artifacts are macos-arm64 only (no Intel mac, no
+  Linux — the pty stubs use macOS headers and Linux has never compiled);
+  the stripped binary is still ~80M (14 vendored tree-sitter grammars —
+  candidates for size work); no degradation story for non-truecolor
+  terminals (Terminal.app).

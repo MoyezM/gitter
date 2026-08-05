@@ -1,0 +1,36 @@
+# Build + test on every push/PR to main. The opam root (custom OxCaml
+# compiler, ~40 min to build cold) is cached whole; on a hit ./scripts/bootstrap
+# is a no-op. Nix supplies system deps; the 'path:.' flake ref is required
+# because the tree may contain untracked files.
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  build-test:
+    runs-on: macos-15
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: DeterminateSystems/nix-installer-action@v16
+
+      - uses: actions/cache@v4
+        with:
+          path: ~/.opam
+          key: opam-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('gitter.opam', 'scripts/bootstrap', 'flake.lock') }}
+          restore-keys: |
+            opam-${{ runner.os }}-${{ runner.arch }}-
+
+      - name: bootstrap opam switch
+        run: nix develop path:. -c ./scripts/bootstrap
+
+      - name: build
+        run: nix develop path:. -c dune build
+
+      - name: test
+        run: nix develop path:. -c dune build @runtest

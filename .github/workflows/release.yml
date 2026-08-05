@@ -1,0 +1,126 @@
+# Tag push (v*) -> build a release binary with the tag baked in, gate on
+# portability (no /nix/store references), strip + ad-hoc re-sign, package
+# tarball + checksums, publish a GitHub release, then update the Homebrew tap
+# (skipped when HOMEBREW_TAP_TOKEN is not configured).
+name: release
+
+on:
+  push:
+    tags: ['v*']
+
+jobs:
+  build:
+    runs-on: macos-15
+    timeout-minutes: 120
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: DeterminateSystems/nix-installer-action@v16
+
+      - uses: actions/cache@v4
+        with:
+          path: ~/.opam
+          key: opam-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('gitter.opam', 'scripts/bootstrap', 'flake.lock') }}
+          restore-keys: |
+            opam-${{ runner.os }}-${{ runner.arch }}-
+
+      - name: bootstrap opam switch
+        run: nix develop path:. -c ./scripts/bootstrap
+
+      - name: build release binary
+        run: GITTER_VERSION=${{ github.ref_name }} nix develop path:. -c dune build --profile release bin/main.exe
+
+      - name: prepare artifact
+        run: |
+          mkdir dist
+          cp _build/default/bin/main.exe dist/gitter
+          cp LICENSE README.md dist/
+
+      # Portable means: nothing dynamically linked outside /usr/lib and
+      # /System. A /nix/store path would make the binary useless off the
+      # build machine.
+      - name: portability gate
+        run: |
+          if otool -L dist/gitter | grep -q '/nix/store'; then
+            echo 'FAIL: binary references /nix/store:' >&2
+            otool -L dist/gitter >&2
+            exit 1
+          fi
+          otool -L dist/gitter
+
+      # strip invalidates the linker's ad-hoc signature, and arm64 macOS
+      # refuses to run unsigned binaries — re-sign ad hoc after stripping.
+      - name: strip and re-sign
+        run: |
+          strip dist/gitter
+          codesign -f -s - dist/gitter
+
+      - name: smoke test
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          out="$(./dist/gitter -version)"
+          echo "$out"
+          case "$out" in
+            *"$TAG"*) ;;
+            *) echo "FAIL: -version output does not contain $TAG" >&2; exit 1 ;;
+          esac
+
+      - name: package
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          tar czf "gitter-${TAG}-macos-arm64.tar.gz" -C dist gitter LICENSE README.md
+          shasum -a 256 *.tar.gz > checksums.txt
+
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            gitter-*-macos-arm64.tar.gz
+            checksums.txt
+          generate_release_notes: true
+
+  update-tap:
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      # secrets can't gate a job-level if — probe in a step, gate the rest on
+      # its output. A missing token is fine; the tap just doesn't get updated.
+      - name: check for tap token
+        id: guard
+        env:
+          TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+        run: |
+          if [ -z "$TOKEN" ]; then
+            echo "no HOMEBREW_TAP_TOKEN — skipping tap update"
+            echo "have_token=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "have_token=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - uses: actions/checkout@v4
+        if: steps.guard.outputs.have_token == 'true'
+
+      - name: download checksums
+        if: steps.guard.outputs.have_token == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release download "${{ github.ref_name }}" --pattern checksums.txt
+
+      - name: update tap
+        if: steps.guard.outputs.have_token == 'true'
+        env:
+          TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          git clone "https://x-access-token:${TOKEN}@github.com/MoyezM/homebrew-tap.git" tap
+          TAG="$TAG" CHECKSUMS_FILE="$PWD/checksums.txt" TAP_DIR="$PWD/tap" \
+            ./scripts/release/update-tap.sh
+          git -C tap add Formula/gitter.rb
+          git -C tap -c user.name='gitter-release-bot' -c user.email='noreply@github.com' \
+            commit -m "gitter ${TAG}"
+          git -C tap push

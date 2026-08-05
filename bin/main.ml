@@ -48,4 +48,7 @@ let command =
      run)
 ;;
 
-let () = Command_unix.run command
+(* [Version.version] is stamped at build time (GITTER_VERSION, releases
+   set it to the git tag); [~version] gives us `gitter -version`, which
+   the brew formula's test block and the install script both call. *)
+let () = Command_unix.run ~version:Version.version command

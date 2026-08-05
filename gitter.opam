@@ -1,0 +1,28 @@
+opam-version: "2.0"
+synopsis: "A git TUI tailored to a staging/review workflow"
+maintainer: "moyez.mansoor@gmail.com"
+authors: "Moyez Mansoor"
+license: "MIT"
+homepage: "https://github.com/moyez/gitter"
+bug-reports: "https://github.com/moyez/gitter/issues"
+
+# The declarative OCaml dependency list: `opam install . --deps-only` inside
+# the 5.2.0+ox switch (scripts/bootstrap does this). Versions are governed by
+# the oxcaml opam repository the switch is created against, so they are left
+# unconstrained here.
+depends: [
+  "ocaml"
+  "dune" {>= "3.17"}
+  "core"
+  "core_unix"
+  "async"
+  "bonsai"
+  "bonsai_term"
+  "bonsai_term_components"
+  "ppx_jane"
+  "patdiff"
+  "tree-sitter"
+]
+build: [
+  ["dune" "build" "-p" name "-j" jobs]
+]

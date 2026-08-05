@@ -3,7 +3,10 @@
 (library
  (name gitter)
  (libraries async bonsai bonsai_term bonsai_term_components.border_box
-   bonsai_term_components.tmux core grammar_registry pending_or_error
-   tree-sitter tree-sitter.json tree-sitter.ocaml)
+   bonsai_term_components.ansi_text_renderer core grammar_registry
+   patdiff.ansi_text tree-sitter tree-sitter.json tree-sitter.ocaml)
+ (foreign_stubs
+  (language c)
+  (names pty_stubs))
  (preprocess
   (pps ppx_jane bonsai.ppx_bonsai)))

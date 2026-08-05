@@ -1,0 +1,40 @@
+#!/usr/bin/env bash
+# One-time OCaml toolchain setup for gitter — everything else comes from the
+# nix dev shell (flake.nix). Idempotent: safe to re-run.
+#
+# Creates the OxCaml switch (a custom compiler: expect ~30 minutes on first
+# run) against the oxcaml opam repository, then installs gitter's OCaml
+# dependencies from gitter.opam.
+set -euo pipefail
+
+root="$(cd "$(dirname "$0")/.." && pwd)"
+SWITCH=5.2.0+ox
+OX_REPO="git+https://github.com/oxcaml/opam-repository.git"
+
+if ! command -v opam >/dev/null; then
+  echo "opam not found — enter the dev shell first (nix develop / direnv allow)" >&2
+  exit 1
+fi
+
+if [ ! -d "$(opam var root 2>/dev/null || echo ~/.opam)" ]; then
+  echo "== initializing opam (no root found)"
+  opam init --bare --no-setup
+fi
+
+if opam switch list --short 2>/dev/null | grep -qx "$SWITCH"; then
+  echo "== switch $SWITCH already exists"
+else
+  echo "== creating switch $SWITCH (custom compiler build: ~30 minutes)"
+  opam switch create "$SWITCH" --repos "ox=$OX_REPO,default" --yes
+fi
+
+eval "$(opam env --switch="$SWITCH" --set-switch)"
+
+# System deps come from the nix dev shell, not Homebrew/MacPorts — stop opam
+# from looking for them.
+opam option --global depext=false >/dev/null 2>&1 || true
+
+echo "== installing gitter dependencies"
+opam install "$root" --deps-only --yes
+
+echo "== done — 'dune build' away"

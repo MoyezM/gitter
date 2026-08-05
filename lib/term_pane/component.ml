@@ -3,10 +3,12 @@ open! Bonsai_term
 open Bonsai.Let_syntax
 
 (* The embedded terminal: a fullscreen overlay hosting [$EDITOR <file>],
-   toggleable to the background (Ctrl-T) while the process keeps running —
-   the tmux session stays alive, only its polling pauses. Opening a file
-   while an editor is still running just foregrounds the existing session:
-   we never inject keys into a running editor. *)
+   toggleable to the background (Ctrl-T) while the process keeps running.
+   Backed by [Pty_client] + [Vt]: a real pty feeding a real emulator —
+   keystrokes are synchronous fd writes, screens are tear-free grid
+   generations, and the mouse passes through SGR-encoded. While an editor
+   is live, opening another file just foregrounds the existing session: we
+   never inject keys into a running editor. *)
 
 module Model = struct
   type t =
@@ -26,35 +28,44 @@ let editor () =
 type t =
   { model : Model.t Bonsai.t
   ; set : (Model.t -> unit Effect.t) Bonsai.t
-  ; term : Bonsai_term_tmux.t Bonsai.t
+  ; generation : int Bonsai.t (* Vt screen generation + lifecycle events *)
+  ; generation_var : int Bonsai.Expert.Var.t
+  ; client : Pty_client.t option ref
+  ; dimensions : Dimensions.t Bonsai.t
+  ; cwd : string
   }
+
+(* rows/cols inside the border box *)
+let inner (dimensions : Dimensions.t) =
+  Int.max 1 (dimensions.height - 2), Int.max 1 (dimensions.width - 2)
+;;
 
 let create ~(dimensions : Dimensions.t Bonsai.t) (local_ graph) =
   let model, set = Bonsai.state Model.initial graph in
+  let generation_var = Bonsai.Expert.Var.create 0 in
+  let client = ref None in
   (* The working dir is pinned to where gitter was launched — paths from
      the status tree are relative to it. *)
   let cwd = Stdlib.Sys.getcwd () in
-  let term =
-    Bonsai_term_tmux.component
-      ~persistence:Keep_command_alive_if_component_deactivates
-      ~mouse:Classic
-      ~working_dir:(Bonsai.return (Some cwd))
-      ~active:
-        (let%arr model in
-         model.visible)
-      ~command:
-        (let%arr model in
-         (* "true" is the unspawned sentinel: exits immediately, never shown
-            (visible only becomes true alongside a real command). *)
-         Option.value model.command ~default:"true")
-      ~dimensions:
-        (let%arr dimensions in
-         { Dimensions.height = Int.max 1 (dimensions.height - 2)
-         ; width = Int.max 1 (dimensions.width - 2)
-         })
-      graph
+  (* Follow pane resizes while a session is live. *)
+  let size =
+    let%arr dimensions in
+    inner dimensions
   in
-  { model; set; term }
+  let resize_callback =
+    Bonsai.return (fun (rows, cols) ->
+      Effect.of_thunk (fun () ->
+        Option.iter !client ~f:(fun c -> Pty_client.resize c ~rows ~cols)))
+  in
+  Bonsai.Edge.on_change ~equal:[%equal: int * int] ~callback:resize_callback size graph;
+  { model
+  ; set
+  ; generation = Bonsai.Expert.Var.value generation_var
+  ; generation_var
+  ; client
+  ; dimensions
+  ; cwd
+  }
 ;;
 
 module Controls = struct
@@ -64,54 +75,80 @@ module Controls = struct
     }
 end
 
-let controls { model; set; term } =
-  let%arr model and set and term in
-  let running = (not term.Bonsai_term_tmux.is_closed) && Option.is_some model.command in
+let controls t =
+  let%arr model = t.model
+  and set = t.set
+  and (_ : int) = t.generation
+  and dimensions = t.dimensions in
+  let running =
+    match !(t.client) with
+    | Some c -> not (Pty_client.is_closed c)
+    | None -> false
+  in
+  let bump () =
+    Bonsai.Expert.Var.update t.generation_var ~f:(fun g -> g + 1)
+  in
+  let spawn command =
+    Effect.of_thunk (fun () ->
+      Option.iter !(t.client) ~f:Pty_client.close;
+      let rows, cols = inner dimensions in
+      t.client
+      := Some
+           (Pty_client.create
+              ~command
+              ~cwd:t.cwd
+              ~rows
+              ~cols
+              ~publish:bump
+              ~on_closed:bump);
+      bump ())
+  in
   { Controls.open_file =
       (fun path ->
         let command = sprintf "%s %s" (editor ()) (Filename.quote path) in
         if running
         then (* an editor is live: foreground it, don't disturb it *)
           set { model with Model.visible = true }
-        else if [%equal: string option] model.command (Some command)
-        then
-          (* same file again after the editor exited: same command string, so
-             the component won't respawn on its own — ask it to *)
+        else
           Effect.Many
-            [ set { Model.visible = true; command = Some command }
-            ; term.Bonsai_term_tmux.reinstantiate_command
-            ]
-        else set { Model.visible = true; command = Some command })
+            [ set { Model.visible = true; command = Some command }; spawn command ])
   ; toggle =
-      (match model.command with
+      (match model.Model.command with
        | None -> Effect.Ignore
-       | Some _ -> set { model with Model.visible = not model.visible })
+       | Some _ -> set { model with Model.visible = not model.Model.visible })
   }
 ;;
 
-let wrap { model; set; term } (base : Widget.t) : Widget.t =
+let wrap t (base : Widget.t) : Widget.t =
   fun ~dimensions (local_ graph) ->
   let ~view:base_view, ~handler:base_handler = base ~dimensions graph in
   let view =
-    let%arr base_view and model and term and dimensions in
-    if not model.visible
+    let%arr base_view
+    and model = t.model
+    and (_ : int) = t.generation
+    and dimensions in
+    if not model.Model.visible
     then base_view
     else (
-      let inner =
-        match term.Bonsai_term_tmux.last_view with
-        | Pending_or_error.Ok v -> v
-        | Pending -> View.text ~attrs:Theme.context " starting terminal..."
-        | Error e -> View.text ~attrs:Theme.untracked (" terminal error: " ^ Error.to_string_hum e)
+      let closed =
+        match !(t.client) with
+        | Some c -> Pty_client.is_closed c
+        | None -> true
+      in
+      let inner_view =
+        match !(t.client) with
+        | Some c -> Vt.render (Pty_client.vt c)
+        | None -> View.text ~attrs:Theme.context " starting editor..."
       in
       let title =
-        if term.Bonsai_term_tmux.is_closed
+        if closed
         then " editor exited — any key returns to gitter "
         else " editor — Ctrl-T: background "
       in
       let boxed =
         View.zcat
           [ View.pad ~l:2 (View.text ~attrs:Theme.header title)
-          ; Bonsai_term_border_box.view ~line_type:Thin ~attrs:Theme.border_focused inner
+          ; Bonsai_term_border_box.view ~line_type:Thin ~attrs:Theme.border_focused inner_view
           ]
       in
       View.crop
@@ -120,24 +157,43 @@ let wrap { model; set; term } (base : Widget.t) : Widget.t =
         boxed)
   in
   let handler =
-    let%arr base_handler and model and set and term in
+    let%arr base_handler
+    and model = t.model
+    and set = t.set
+    and (_ : int) = t.generation
+    and dimensions in
     fun (event : Event.t) ->
-      match model.visible, event with
+      match model.Model.visible, event with
       (* Ctrl-T toggles both ways (foreground only once something ran). *)
       | true, Key_press { key = ASCII ('t' | 'T'); mods = [ Ctrl ] } ->
         set { model with Model.visible = false }
       | false, Key_press { key = ASCII ('t' | 'T'); mods = [ Ctrl ] } ->
-        if Option.is_some model.command
+        if Option.is_some model.Model.command
         then set { model with Model.visible = true }
         else Effect.Ignore
       | false, event -> base_handler event
       | true, event ->
-        if term.Bonsai_term_tmux.is_closed
-        then (
-          match event with
-          | Key_press _ -> set { model with Model.visible = false }
-          | Mouse _ | Paste _ -> Effect.Ignore)
-        else term.Bonsai_term_tmux.handler event
+        (match !(t.client) with
+         | Some c when not (Pty_client.is_closed c) ->
+           (* synchronous fd write — no deferred hop on the key path *)
+           Effect.of_thunk (fun () ->
+             match event with
+             | Event.Mouse { kind; position; mods } ->
+               (* translate to pane-local (inside the border) and drop
+                  border clicks *)
+               let x = position.x - 1
+               and y = position.y - 1 in
+               let rows, cols = inner dimensions in
+               if x >= 0 && y >= 0 && x < cols && y < rows
+               then
+                 Pty_client.send_event
+                   c
+                   (Event.Mouse { kind; position = { Position.x; y }; mods })
+             | event -> Pty_client.send_event c event)
+         | Some _ | None ->
+           (match event with
+            | Key_press _ -> set { model with Model.visible = false }
+            | Mouse _ | Paste _ -> Effect.Ignore))
   in
   ~view, ~handler
 ;;

@@ -222,7 +222,7 @@ let scrolloff = 5
    converts pixel deltas into proportionally many wheel events), so a flat
    per-event step already scrolls faster when you flick faster. Adding our
    own boost on top double-accelerates and feels jumpy. *)
-let wheel_base = 3
+let wheel_step = 3
 
 type view_state =
   { cursor : int
@@ -270,7 +270,7 @@ let move_cursor state lines ~height ~by =
 (* Wheel scrolls the VIEW; the cursor is then clamped to stay visible. *)
 let wheel state lines ~height ~dir =
   let count = List.length lines in
-  let step = wheel_base * dir in
+  let step = wheel_step * dir in
   let scroll = Int.max 0 (Int.min (Int.max 0 (count - height)) (state.scroll + step)) in
   let cursor =
     state.cursor
@@ -293,7 +293,7 @@ module View_action = struct
     | Wheel of int
     | Click of int
     | Reset
-  [@@deriving sexp]
+  [@@deriving sexp_of]
 end
 
 let component ~(selection : string option Bonsai.t) : Widget.t =

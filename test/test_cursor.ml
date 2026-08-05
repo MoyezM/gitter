@@ -38,12 +38,12 @@ let () =
 let () =
   let state = D.initial_view_state in
   let s1 = D.wheel state many ~height:5 ~dir:1 in
-  check "tick scrolls one base step" (s1.scroll = D.wheel_base);
+  check "tick scrolls one base step" (s1.scroll = D.wheel_step);
   let s2 = D.wheel s1 many ~height:5 ~dir:1 in
-  check "steps stay flat" (s2.scroll - s1.scroll = D.wheel_base);
+  check "steps stay flat" (s2.scroll - s1.scroll = D.wheel_step);
   check "cursor clamped into view" (s2.cursor >= s2.scroll && s2.cursor < s2.scroll + 5);
   let s3 = D.wheel s2 many ~height:5 ~dir:(-1) in
-  check "scrolls back up" (s3.scroll = s2.scroll - D.wheel_base);
+  check "scrolls back up" (s3.scroll = s2.scroll - D.wheel_step);
   check "clamps at top" ((D.wheel state many ~height:5 ~dir:(-1)).scroll = 0)
 ;;
 

@@ -5,10 +5,10 @@ open Bonsai.Let_syntax
 (* The app root: wires the layers together.
 
      Menu (Space overlay)
-       -> Mode (screen router)
-            -> Layout (panes)
-                 -> leaves
-   ... vcat'd above the status bar.
+       -> Layout (panes)
+            -> leaves
+   ... vcat'd above the status bar. (A Mode screen-router slots in above
+   Layout when a second screen exists.)
 
    Layout's state is created here so its control handle can feed the menu's
    command tree — the pattern every layer with commands will follow. *)
@@ -63,8 +63,7 @@ let app ~(dimensions : Dimensions.t Bonsai.t) (local_ graph)
   let layout_model, layout_inject = Layout.Component.state layout_tree graph in
   let controls = Layout.Component.controls ~inject:layout_inject in
   let screen =
-    Mode.component
-      (Layout.Component.component layout_tree ~model:layout_model ~inject:layout_inject)
+    Layout.Component.component layout_tree ~model:layout_model ~inject:layout_inject
   in
   let with_menu =
     Menu.Component.component

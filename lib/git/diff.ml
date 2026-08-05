@@ -8,7 +8,7 @@ module Line = struct
     | Context of string
     | Added of string
     | Removed of string
-  [@@deriving sexp, equal]
+  [@@deriving equal]
 end
 
 module Hunk = struct
@@ -18,7 +18,6 @@ module Hunk = struct
     ; new_start : int (* first line number on the post-image side *)
     ; lines : Line.t list
     }
-  [@@deriving sexp, equal]
 
   (* Each line paired with its (old, new) line numbers; the side a line
      doesn't exist on is [None]. *)
@@ -36,7 +35,6 @@ module File = struct
     { path : string (* the post-image path *)
     ; hunks : Hunk.t list
     }
-  [@@deriving sexp, equal]
 end
 
 (* "diff --git a/foo b/foo" -> "foo". Quoted/renamed paths keep the b-side

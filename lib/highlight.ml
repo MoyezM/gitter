@@ -19,7 +19,6 @@ module Span = struct
     ; end_col : int
     ; capture : string
     }
-  [@@deriving sexp, equal]
 end
 
 type session =

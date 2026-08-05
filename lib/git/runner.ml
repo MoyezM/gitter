@@ -4,10 +4,8 @@ open Async
 (* The single process edge of the git layer: everything else is pure
    parsing. Errors carry the argv for diagnosability. *)
 
-let git ?working_dir ?accept_nonzero_exit args =
-  match%map
-    Process.run ?working_dir ?accept_nonzero_exit ~prog:"git" ~args ()
-  with
+let git ?accept_nonzero_exit args =
+  match%map Process.run ?accept_nonzero_exit ~prog:"git" ~args () with
   | Ok output -> Ok output
   | Error err ->
     Error

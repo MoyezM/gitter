@@ -29,23 +29,21 @@ let find path =
 let () =
   check "entry count (headers skipped)" (List.length entries = 7);
   let unstaged = find "lib/app.ml" in
-  check "unstaged: not staged" (not (Status.Entry.staged unstaged));
-  check "unstaged: is unstaged" (Status.Entry.unstaged unstaged);
+  check "unstaged: XY chars" (Char.equal unstaged.index '.' && Char.equal unstaged.worktree 'M');
   let staged = find "bin/main.ml" in
-  check "staged: is staged" (Status.Entry.staged staged);
-  check "staged: not unstaged" (not (Status.Entry.unstaged staged));
+  check "staged: XY chars" (Char.equal staged.index 'M' && Char.equal staged.worktree '.');
   let both = find "lib/both.ml" in
-  check "both: staged and unstaged" (Status.Entry.staged both && Status.Entry.unstaged both);
+  check "both sides: XY chars" (Char.equal both.index 'M' && Char.equal both.worktree 'M');
   let renamed = find "lib/new_name.ml" in
   check
     "rename carries origin"
     (Status.Entry.Kind.equal renamed.kind (Renamed { from = "lib/old_name.ml" }));
-  check "rename is staged" (Status.Entry.staged renamed);
+  check "rename: index char" (Char.equal renamed.index 'R');
   let conflict = find "lib/conflict.ml" in
   check "unmerged kind" (Status.Entry.Kind.equal conflict.kind Unmerged);
   let untracked = find "test/scratch.ml" in
   check "untracked kind" (Status.Entry.Kind.equal untracked.kind Untracked);
-  check "untracked not staged" (not (Status.Entry.staged untracked));
+  check "untracked: XY chars" (Char.equal untracked.index '?' && Char.equal untracked.worktree '?');
   check "path with space survives" (String.equal (find "docs/with space.md").path "docs/with space.md")
 ;;
 

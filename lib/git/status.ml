@@ -11,7 +11,7 @@ open! Core
      # ...                                                        headers
 
    [index]/[worktree] are the raw XY letters ('.' means unmodified). We keep
-   them as chars — the classification helpers below are what the UI reads.
+   them as chars — the UI renders them directly.
 
    Caveat: fields are space-separated with the path as the tail, so paths
    containing consecutive spaces would parse wrong; the -z variant fixes
@@ -24,7 +24,7 @@ module Entry = struct
       | Renamed of { from : string }
       | Untracked
       | Unmerged
-    [@@deriving sexp, equal]
+    [@@deriving equal]
   end
 
   type t =
@@ -33,11 +33,6 @@ module Entry = struct
     ; path : string
     ; kind : Kind.t
     }
-  [@@deriving sexp, equal]
-
-  let unmodified c = Char.equal c '.' || Char.equal c ' '
-  let staged t = (not (unmodified t.index)) && not (Kind.equal t.kind Untracked)
-  let unstaged t = not (unmodified t.worktree)
 end
 
 (* The path is everything after the first [n] space-separated fields. *)

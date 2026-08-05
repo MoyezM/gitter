@@ -3,10 +3,3 @@ external language_ptr : unit -> nativeint = "caml_gitter_grammar_c_language"
 
 let language () = Tree_sitter.Language.of_address (language_ptr ())
 let highlights_query = Query_source.source
-
-let highlight =
-  let parser = lazy (Tree_sitter.Parser.create (language ())) in
-  let query = lazy (Tree_sitter.Query.create (language ()) ~source:highlights_query) in
-  fun content ->
-    let tree = Tree_sitter.Parser.parse_string (Lazy.force parser) content in
-    Tree_sitter.highlight (Lazy.force query) tree

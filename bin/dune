@@ -1,5 +1,5 @@
 (executable
  (name main)
- (libraries async bonsai bonsai_term core core_unix.command_unix gitter)
+ (libraries async bonsai_term core core_unix.command_unix gitter)
  (preprocess
-  (pps ppx_jane bonsai.ppx_bonsai)))
+  (pps ppx_jane)))

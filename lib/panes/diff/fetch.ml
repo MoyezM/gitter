@@ -58,20 +58,27 @@ let load t ~path ~set =
   match fetched with
   | Error e -> when_current (set (Some (path, Error e)))
   | Ok (files, old_content, new_content) ->
-    (* The document is built off the scheduler too: flattening a 646K-line
-       diff costs ~1s and would stall the UI right as the fetch lands. *)
-    let%bind.Effect document =
-      Effect.of_deferred_thunk (fun () -> Cpu.in_domain (fun () -> Document.of_files files))
-    in
-    let binary_only = (not (List.is_empty files)) && Array.is_empty document in
     when_current
-      ((* Phase one: diff text renders immediately, plain. *)
+      ((* The document build runs off the scheduler (flattening a 646K-line
+          diff costs ~1s and would stall the UI right as the fetch lands);
+          the entry check above skips it entirely for already-superseded
+          fetches. Domain exhaustion falls back to building on the
+          scheduler — slow but correct; the pane must never wedge. *)
+       let%bind.Effect document =
+         Effect.of_deferred_thunk (fun () ->
+           try Cpu.in_domain (fun () -> Document.of_files files) with
+           | _ -> Async.return (Document.of_files files))
+       in
+       let binary_only = (not (List.is_empty files)) && Array.is_empty document in
+       (* Phase one: diff text renders immediately, plain. *)
        let%bind.Effect () =
-         set
-           (Some
-              ( path
-              , Ok { document; binary_only; old_hl = Highlight.empty; new_hl = Highlight.empty }
-              ))
+         when_current
+           (set
+              (Some
+                 ( path
+                 , Ok
+                     { document; binary_only; old_hl = Highlight.empty; new_hl = Highlight.empty }
+                 )))
        in
        (* Phase two: highlight sessions parse in their own domains and swap
           in when ready — frames never wait on a parse. *)

@@ -35,9 +35,10 @@ end
 val apply_action : Document.t -> Model.t -> Action.t -> height:int -> Model.t
 
 (** The cursor row to DISPLAY and to start motions from: the model cursor
-    when it rests on a diff row, else the first diff row visible in the
-    viewport. The single owner of the "cursor sits on a diff line"
-    invariant — render and apply_action must both use it. *)
+    when it rests on a diff row that is inside the viewport, else the first
+    diff row visible in the viewport. The single owner of the "cursor sits
+    on a visible diff line" invariant — render and apply_action must both
+    use it, so what you see is always what [j] moves from. *)
 val effective_cursor : Document.t -> Model.t -> height:int -> int
 
 (** Scroll clamped for the current document and pane height; render clamps

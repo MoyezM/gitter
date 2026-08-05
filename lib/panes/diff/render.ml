@@ -41,7 +41,26 @@ let content ~selection ~(result : Fetch.result) : content =
 let spans_view ~base ~spans ~width text =
   let default_fg = [ Attr.fg Theme.text ] in
   let piece ~fg s = seg (fg @ base) s in
-  let text = if String.length text > width then String.prefix text width else text in
+  (* Truncate to at most [width] CODEPOINTS. Each codepoint occupies at
+     least one cell, so more can never fit — but cutting by BYTES would
+     discard multibyte content that fits the cell budget, and could split a
+     codepoint. Rows of wide glyphs may still overflow in cells; the layout
+     clips those as before. *)
+  let text =
+    let n = String.length text in
+    if n <= width
+    then text
+    else (
+      let is_start i = Char.to_int text.[i] land 0xC0 <> 0x80 in
+      let rec go i seen =
+        if i >= n
+        then text
+        else if is_start i && seen = width
+        then String.prefix text i
+        else go (i + 1) (if is_start i then seen + 1 else seen)
+      in
+      go 0 0)
+  in
   let len = String.length text in
   let rec go col spans acc =
     if col >= len

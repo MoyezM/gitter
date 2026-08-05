@@ -38,22 +38,27 @@ let clamp_scroll (doc : Document.t) ~height scroll =
 ;;
 
 (* The diff row nearest [i], preferring direction [dir]; falls back to the
-   nearest one the other way; [i] itself when the document has none. *)
+   nearest one the other way; [i] itself when the document has none. Total
+   on empty documents (a binary-only diff yields [||], and queued events can
+   still arrive against it). *)
 let snap (doc : Document.t) ~dir i =
-  let i = clamp_row doc i in
   let n = Array.length doc in
-  let rec fwd j =
-    if j >= n then None else if Document.is_diff_line doc.(j) then Some j else fwd (j + 1)
-  in
-  let rec bwd j =
-    if j < 0 then None else if Document.is_diff_line doc.(j) then Some j else bwd (j - 1)
-  in
-  let nearest =
-    if dir >= 0
-    then Option.first_some (fwd i) (bwd i)
-    else Option.first_some (bwd i) (fwd i)
-  in
-  Option.value nearest ~default:i
+  if n = 0
+  then 0
+  else (
+    let i = clamp_row doc i in
+    let rec fwd j =
+      if j >= n then None else if Document.is_diff_line doc.(j) then Some j else fwd (j + 1)
+    in
+    let rec bwd j =
+      if j < 0 then None else if Document.is_diff_line doc.(j) then Some j else bwd (j - 1)
+    in
+    let nearest =
+      if dir >= 0
+      then Option.first_some (fwd i) (bwd i)
+      else Option.first_some (bwd i) (fwd i)
+    in
+    Option.value nearest ~default:i)
 ;;
 
 let effective_cursor (doc : Document.t) (model : Model.t) ~height =
@@ -61,13 +66,15 @@ let effective_cursor (doc : Document.t) (model : Model.t) ~height =
   then 0
   else (
     let cursor = clamp_row doc model.cursor in
-    if Document.is_diff_line doc.(cursor)
+    let scroll = clamp_scroll doc ~height model.scroll in
+    let stop = Int.min (Array.length doc) (scroll + height) in
+    if cursor >= scroll && cursor < stop && Document.is_diff_line doc.(cursor)
     then cursor
     else (
-      (* Freshly loaded documents leave the cursor on a header row: show it
-         on (and move it from) the first diff row in the viewport. *)
-      let scroll = clamp_scroll doc ~height model.scroll in
-      let stop = Int.min (Array.length doc) (scroll + height) in
+      (* The model cursor is on a header (fresh load) or outside the
+         viewport (resize leftovers, click-snap past the edge): show the
+         cursor on — and move it from — the first diff row the user can
+         actually see. *)
       let rec go j =
         if j >= stop then cursor else if Document.is_diff_line doc.(j) then j else go (j + 1)
       in

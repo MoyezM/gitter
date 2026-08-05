@@ -4,7 +4,12 @@ open Async
 (* The queries the UI actually asks: run git, parse with the pure parsers. *)
 
 let status () =
-  let%map.Deferred.Or_error output = Runner.git [ "status"; "--porcelain=v2" ] in
+  (* -uall: enumerate files INSIDE untracked directories — the default
+     collapses a fully-untracked dir into one "dir/" entry, which can't be
+     diffed and hides its contents from review. *)
+  let%map.Deferred.Or_error output =
+    Runner.git [ "status"; "--porcelain=v2"; "--untracked-files=all" ]
+  in
   Status.parse output
 ;;
 

@@ -47,10 +47,10 @@ let () =
 let () =
   check
     "scrolls down to keep margin"
-    ((apply many { Model.cursor = 29; scroll = 5 } (A.Move 1)).scroll = 30 - (20 - 1 - 5));
+    ((apply many { Model.cursor = 23; scroll = 5 } (A.Move 1)).scroll = 24 - (20 - 1 - 5));
   check
     "scrolls up to keep margin"
-    ((apply many { Model.cursor = 7; scroll = 10 } (A.Move (-1))).scroll = 6 - 5);
+    ((apply many { Model.cursor = 7; scroll = 3 } (A.Move (-1))).scroll = 6 - 5);
   check
     "no scroll while inside margins"
     ((apply many { Model.cursor = 10; scroll = 5 } (A.Move 1)).scroll = 5);
@@ -73,6 +73,27 @@ let () =
   let m3 = apply ~height:5 many m2 (A.Wheel (-1)) in
   check "wheel up steps back" (m3.scroll = m2.scroll - 3);
   check "wheel clamps at top" ((apply ~height:5 many m0 (A.Wheel (-1))).scroll = 0)
+;;
+
+(* Empty documents (binary-only diffs): every action is total — queued
+   events can arrive against [||] and must not raise. *)
+let () =
+  let empty : Document.t = [||] in
+  List.iter
+    [ A.Move 1; A.Move (-1); A.Half_page 1; A.Wheel 1; A.Wheel (-1); A.Click 0; A.Reset ]
+    ~f:(fun action ->
+      let m = apply empty Model.initial action in
+      check "empty doc action is total" (m.cursor = 0 && m.scroll = 0))
+;;
+
+(* An off-viewport cursor ghosts to the first visible diff row — what you
+   see is what [j] moves from. *)
+let () =
+  check
+    "off-screen cursor ghosts into the viewport"
+    (State.effective_cursor many { Model.cursor = 90; scroll = 0 } ~height:5 = 0);
+  let m = apply ~height:5 many { Model.cursor = 90; scroll = 0 } (A.Move 1) in
+  check "move starts from the visible ghost" (m.cursor = 1)
 ;;
 
 (* Reset, and the resize re-anchor: Click must hit the row render displayed

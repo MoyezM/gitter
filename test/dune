@@ -1,5 +1,5 @@
 (tests
- (names test_solver test_git)
- (libraries core gitter)
+ (names test_solver test_git test_highlight)
+ (libraries core gitter grammar_registry)
  (preprocess
   (pps ppx_jane)))

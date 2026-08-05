@@ -61,12 +61,15 @@ let hunk_starts header =
   | _ -> 0, 0
 ;;
 
+(* Accumulator lists are kept REVERSED and only reversed at flush — appending
+   with [@] is quadratic, which on a 100k-line diff (a vendored parser.c...)
+   freezes the whole UI since parsing runs on the render scheduler. *)
 type acc =
-  { files : File.t list
+  { files : File.t list (* reversed *)
   ; path : string option
-  ; hunks : Hunk.t list
+  ; hunks : Hunk.t list (* reversed *)
   ; header : string option
-  ; lines : Line.t list
+  ; lines : Line.t list (* reversed *)
   }
 
 let flush_hunk acc =
@@ -75,7 +78,8 @@ let flush_hunk acc =
   | Some header ->
     let old_start, new_start = hunk_starts header in
     { acc with
-      hunks = acc.hunks @ [ { Hunk.header; old_start; new_start; lines = acc.lines } ]
+      hunks =
+        { Hunk.header; old_start; new_start; lines = List.rev acc.lines } :: acc.hunks
     ; header = None
     ; lines = []
     }
@@ -85,7 +89,12 @@ let flush_file acc =
   let acc = flush_hunk acc in
   match acc.path with
   | None -> acc
-  | Some path -> { acc with files = acc.files @ [ { File.path; hunks = acc.hunks } ]; path = None; hunks = [] }
+  | Some path ->
+    { acc with
+      files = { File.path; hunks = List.rev acc.hunks } :: acc.files
+    ; path = None
+    ; hunks = []
+    }
 ;;
 
 let parse output : File.t list =
@@ -98,7 +107,7 @@ let parse output : File.t list =
       match acc.header with
       | None -> acc (* file headers: ---, +++, index, mode, etc. *)
       | Some _ ->
-        let add l = { acc with lines = acc.lines @ [ l ] } in
+        let add l = { acc with lines = l :: acc.lines } in
         (match String.prefix line 1 with
          | "+" -> add (Added (String.drop_prefix line 1))
          | "-" -> add (Removed (String.drop_prefix line 1))
@@ -108,5 +117,5 @@ let parse output : File.t list =
   in
   let init = { files = []; path = None; hunks = []; header = None; lines = [] } in
   let final = flush_file (List.fold (String.split_lines output) ~init ~f:step) in
-  final.files
+  List.rev final.files
 ;;

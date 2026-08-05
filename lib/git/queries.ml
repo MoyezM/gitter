@@ -21,6 +21,10 @@ let diff_file ?working_dir ?(staged = false) path =
   Diff.parse output
 ;;
 
+(* The file's content at HEAD — the old side of an uncommitted diff, used
+   for old-side syntax highlighting. *)
+let file_at_head ?working_dir path = Runner.git ?working_dir [ "show"; "HEAD:" ^ path ]
+
 (* The file's combined (staged + unstaged) change vs HEAD — what "what did I
    change" means in the uncommitted view. Untracked files have no diff vs
    HEAD, so fall back to a --no-index diff against /dev/null (which exits 1

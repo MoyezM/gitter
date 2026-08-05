@@ -187,6 +187,19 @@ Step 3 real Mode router when a second screen exists.
 
 ## Implementation notes
 
+- **Syntax highlighting** (decided): single engine, tree-sitter (fastest +
+  most accurate; the helix/neovim/zed lineage), statically linked for a
+  self-contained binary. OCaml/JSON grammars come from the `tree-sitter`
+  opam package; other languages are vendored under `grammars/<lang>/` via
+  `scripts/add-grammar <lang> <repo> <ref> [exts]` — fully automatic: it
+  fetches pinned sources plus the upstream highlights.scm (used verbatim;
+  predicates work), generates the grammar library AND the extension registry
+  (`grammars/registry/`, script-owned), and validates with build + tests.
+  No manual code changes per language; the only optional human touch is
+  editing a grammar's highlights.scm (data). Python and JavaScript are in.
+  Highlighting composes with diffs by channel: syntax owns foreground, diff
+  status owns background tint.
+
 - How we talk to git: shell out to `git` (and `gt`?) vs a libgit binding —
   TBD; shelling out is the pragmatic default.
 - The embedded-terminal component (`bonsai_term_components.tmux`, demo in

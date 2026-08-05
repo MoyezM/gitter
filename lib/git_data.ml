@@ -59,6 +59,10 @@ let create (local_ graph) =
   Bonsai.Edge.before_display fetch graph;
   let refresh =
     let%arr set_load in
+    (* Bump the generation too: an in-flight fetch landing just after the
+       reset would otherwise re-satisfy before_display and silently swallow
+       the refresh. *)
+    let%bind.Effect () = Effect.of_thunk (fun () -> incr generation) in
     set_load Load.Not_loaded
   in
   let cursor, files_inject =

@@ -23,9 +23,13 @@ let parse_off_thread output =
   Ok files
 ;;
 
+(* Paths after [--] are PATHSPECS: glob chars in a filename (pages/[id].tsx)
+   would match OTHER files. The literal magic makes them plain filenames. *)
+let literal path = ":(literal)" ^ path
+
 let diff_file_vs_head path =
   match%bind.Deferred.Or_error
-    Runner.git [ "diff"; "--no-color"; "HEAD"; "--"; path ]
+    Runner.git [ "diff"; "--no-color"; "HEAD"; "--"; literal path ]
   with
   | "" ->
     (* Empty output is ambiguous: a tracked file with no changes (e.g. its
@@ -35,7 +39,9 @@ let diff_file_vs_head path =
     (match%bind.Deferred Sys.is_directory path with
      | `Yes -> Deferred.Or_error.return []
      | `No | `Unknown ->
-       (match%bind.Deferred Runner.git [ "ls-files"; "--error-unmatch"; "--"; path ] with
+       (match%bind.Deferred
+          Runner.git [ "ls-files"; "--error-unmatch"; "--"; literal path ]
+        with
         | Ok _ -> Deferred.Or_error.return [] (* tracked, genuinely unchanged *)
         | Error _ ->
           let%bind.Deferred.Or_error output =

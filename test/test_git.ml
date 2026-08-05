@@ -53,6 +53,18 @@ let () =
   check "path with space survives" (String.equal (find "docs/with space.md").path "docs/with space.md")
 ;;
 
+(* C-quoted path decoding: named control escapes, octal, and totality on
+   malformed input (git never emits it, but the parser must not raise). *)
+let () =
+  check "unquote passthrough" (String.equal (Status.unquote "plain.ml") "plain.ml");
+  check "unquote octal" (String.equal (Status.unquote "\"h\\303\\251.ml\"") "h\195\169.ml");
+  check
+    "unquote named control escapes"
+    (String.equal (Status.unquote "\"a\\ab\\bv\\vf\\f.ml\"") "a\007b\bv\011f\012.ml");
+  check "unquote escaped quote" (String.equal (Status.unquote "\"a\\\"b\"") "a\"b");
+  check "unquote malformed octal is total" (String.equal (Status.unquote "\"x\\7zz\"") "x7zz")
+;;
+
 (* --- unified diff ------------------------------------------------------- *)
 
 let diff_sample =

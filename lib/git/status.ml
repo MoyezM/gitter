@@ -47,9 +47,19 @@ let unquote path =
   else (
     let body = String.sub path ~pos:1 ~len:(n - 2) in
     let buf = Buffer.create (String.length body) in
+    (* Three octal digits -> byte; None on malformed input (never produced
+       by git, but the parser must be total). *)
     let octal i =
-      let digit j = Char.to_int body.[j] - Char.to_int '0' in
-      Buffer.add_char buf (Char.of_int_exn ((digit i * 64) + (digit (i + 1) * 8) + digit (i + 2)))
+      let digit j =
+        match body.[j] with
+        | '0' .. '7' as c -> Some (Char.to_int c - Char.to_int '0')
+        | _ -> None
+      in
+      match digit i, digit (i + 1), digit (i + 2) with
+      | Some a, Some b, Some c ->
+        let v = (a * 64) + (b * 8) + c in
+        if v < 256 then Some (Char.of_int_exn v) else None
+      | _ -> None
     in
     let rec go i =
       if i >= String.length body
@@ -57,10 +67,17 @@ let unquote path =
       else if Char.equal body.[i] '\\' && i + 1 < String.length body
       then (
         match body.[i + 1] with
+        | 'a' -> Buffer.add_char buf '\007'; go (i + 2)
+        | 'b' -> Buffer.add_char buf '\b'; go (i + 2)
         | 't' -> Buffer.add_char buf '\t'; go (i + 2)
         | 'n' -> Buffer.add_char buf '\n'; go (i + 2)
+        | 'v' -> Buffer.add_char buf '\011'; go (i + 2)
+        | 'f' -> Buffer.add_char buf '\012'; go (i + 2)
         | 'r' -> Buffer.add_char buf '\r'; go (i + 2)
-        | '0' .. '7' when i + 3 < String.length body -> octal (i + 1); go (i + 4)
+        | '0' .. '7' when i + 3 < String.length body ->
+          (match octal (i + 1) with
+           | Some byte -> Buffer.add_char buf byte; go (i + 4)
+           | None -> Buffer.add_char buf body.[i + 1]; go (i + 2))
         | c ->
           (* escaped quote, backslash, and anything else: the char itself *)
           Buffer.add_char buf c;

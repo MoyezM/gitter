@@ -336,6 +336,19 @@ let component ~(selection : string option Bonsai.t) : Widget.t =
         match input with
         | Bonsai.Computation_status.Inactive -> state
         | Active (lines, height) ->
+          (* Resizes don't transition the machine, so scroll can be stale
+             for the current height. Re-anchor before dispatch — Click in
+             particular maps clicked screen rows through scroll, and must
+             agree with what render (which clamps the same way) displayed. *)
+          let state =
+            { state with
+              scroll =
+                Int.clamp_exn
+                  state.scroll
+                  ~min:0
+                  ~max:(Int.max 0 (List.length lines - height))
+            }
+          in
           (match action with
            | Reset -> initial_view_state
            | Move by -> move_cursor state lines ~height ~by

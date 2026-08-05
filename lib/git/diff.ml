@@ -59,61 +59,37 @@ let hunk_starts header =
   | _ -> 0, 0
 ;;
 
-(* Accumulator lists are kept REVERSED and only reversed at flush — appending
-   with [@] is quadratic, which on a 100k-line diff (a vendored parser.c...)
-   freezes the whole UI since parsing runs on the render scheduler. *)
-type acc =
-  { files : File.t list (* reversed *)
-  ; path : string option
-  ; hunks : Hunk.t list (* reversed *)
-  ; header : string option
-  ; lines : Line.t list (* reversed *)
-  }
-
-let flush_hunk acc =
-  match acc.header with
-  | None -> acc
-  | Some header ->
-    let old_start, new_start = hunk_starts header in
-    { acc with
-      hunks =
-        { Hunk.header; old_start; new_start; lines = List.rev acc.lines } :: acc.hunks
-    ; header = None
-    ; lines = []
-    }
+(* A hunk-body line; None drops "\ No newline at end of file" and junk. *)
+let body_line line =
+  match String.prefix line 1 with
+  | "+" -> Some (Line.Added (String.drop_prefix line 1))
+  | "-" -> Some (Line.Removed (String.drop_prefix line 1))
+  | " " -> Some (Line.Context (String.drop_prefix line 1))
+  | _ -> None
 ;;
 
-let flush_file acc =
-  let acc = flush_hunk acc in
-  match acc.path with
-  | None -> acc
-  | Some path ->
-    { acc with
-      files = { File.path; hunks = List.rev acc.hunks } :: acc.files
-    ; path = None
-    ; hunks = []
-    }
-;;
-
+(* Group lines at "diff --git" boundaries, then each file's tail at "@@"
+   boundaries. The headerless leading groups — anything before the first
+   file, and each file's ---/+++/index preamble — fall out of the match. *)
 let parse output : File.t list =
-  let step acc line =
-    if String.is_prefix line ~prefix:"diff --git"
-    then { (flush_file acc) with path = Some (path_of_header line) }
-    else if String.is_prefix line ~prefix:"@@"
-    then { (flush_hunk acc) with header = Some line }
-    else (
-      match acc.header with
-      | None -> acc (* file headers: ---, +++, index, mode, etc. *)
-      | Some _ ->
-        let add l = { acc with lines = l :: acc.lines } in
-        (match String.prefix line 1 with
-         | "+" -> add (Added (String.drop_prefix line 1))
-         | "-" -> add (Removed (String.drop_prefix line 1))
-         | " " -> add (Context (String.drop_prefix line 1))
-         | "\\" -> acc (* "\ No newline at end of file" *)
-         | _ -> acc))
-  in
-  let init = { files = []; path = None; hunks = []; header = None; lines = [] } in
-  let final = flush_file (List.fold (String.split_lines output) ~init ~f:step) in
-  List.rev final.files
+  let starts prefix line = String.is_prefix line ~prefix in
+  String.split_lines output
+  |> List.group ~break:(fun _ line -> starts "diff --git" line)
+  |> List.filter_map ~f:(function
+    | header :: rest when starts "diff --git" header ->
+      let hunks =
+        List.group rest ~break:(fun _ line -> starts "@@" line)
+        |> List.filter_map ~f:(function
+          | hh :: body when starts "@@" hh ->
+            let old_start, new_start = hunk_starts hh in
+            Some
+              { Hunk.header = hh
+              ; old_start
+              ; new_start
+              ; lines = List.filter_map body ~f:body_line
+              }
+          | _ -> None)
+      in
+      Some { File.path = path_of_header header; hunks }
+    | _ -> None)
 ;;

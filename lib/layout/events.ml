@@ -13,13 +13,20 @@ let forward_to_leaf ~handlers (leaf : Solver.Solved.leaf) (event : Event.t) =
   | Some handler ->
     (match event with
      | Event.Mouse { kind; position; mods } ->
-       (* Translate into the leaf's inner coordinate space. *)
+       (* Translate into the leaf's inner coordinate space. Hit-testing uses
+          the full rect (borders included), so a click on the border/title
+          would arrive as row -1 or column -1 and mutate leaf state — drop
+          anything outside the inner box instead. *)
        let position =
          { Position.x = position.x - (leaf.rect.x + 1)
          ; y = position.y - (leaf.rect.y + 1)
          }
        in
-       handler (Event.Mouse { kind; position; mods })
+       let inner_w = leaf.rect.width - 2 in
+       let inner_h = leaf.rect.height - 2 in
+       if position.x < 0 || position.y < 0 || position.x >= inner_w || position.y >= inner_h
+       then Effect.Ignore
+       else handler (Event.Mouse { kind; position; mods })
      | event -> handler event)
 ;;
 

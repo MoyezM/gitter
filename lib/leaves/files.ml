@@ -11,15 +11,17 @@ let pad_to width s = s ^ String.make (Int.max 0 (width - String.length s)) ' '
 
 let code_char c = if Char.equal c '.' then ' ' else c
 
-let status_code ~selected (entry : Git.Status.Entry.t) =
-  let with_sel attrs = if selected then Theme.selection_bg :: attrs else attrs in
-  match entry.kind with
-  | Untracked -> [ seg (with_sel Theme.untracked) "??" ]
-  | Unmerged -> [ seg (with_sel Theme.untracked) "UU" ]
-  | Changed | Renamed _ ->
-    [ seg (with_sel Theme.staged) (String.of_char (code_char entry.index))
-    ; seg (with_sel Theme.unstaged) (String.of_char (code_char entry.worktree))
-    ]
+(* The parser stores the real XY letters, so print them as-is (an add/add
+   conflict reads "AA", not a flattened "UU"); kind only picks the colors. *)
+let status_code ~with_sel (entry : Git.Status.Entry.t) =
+  let index_attrs, worktree_attrs =
+    match entry.kind with
+    | Untracked | Unmerged -> Theme.untracked, Theme.untracked
+    | Changed | Renamed _ -> Theme.staged, Theme.unstaged
+  in
+  [ seg (with_sel index_attrs) (String.of_char (code_char entry.index))
+  ; seg (with_sel worktree_attrs) (String.of_char (code_char entry.worktree))
+  ]
 ;;
 
 let row ~width ~selected (entry : Git.Status.Entry.t) =
@@ -33,7 +35,7 @@ let row ~width ~selected (entry : Git.Status.Entry.t) =
     | Changed | Untracked | Unmerged -> entry.path
   in
   let name = seg (with_sel [ Attr.fg Theme.text ]) (pad_to (Int.max 1 (width - 5)) label) in
-  View.hcat (marker :: (status_code ~selected entry @ [ seg (with_sel []) " "; name ]))
+  View.hcat (marker :: (status_code ~with_sel entry @ [ seg (with_sel []) " "; name ]))
 ;;
 
 let render ~(load : Git_data.Load.t) ~cursor ~(dimensions : Dimensions.t) =

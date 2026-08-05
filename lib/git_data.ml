@@ -40,15 +40,20 @@ type t =
 
 let create (local_ graph) =
   let load, set_load = Bonsai.state Load.Not_loaded graph in
+  (* Fetch generation: refresh mid-flight starts a second fetch; only the
+     NEWEST fetch may land, or a slow stale status overwrites a fresh one. *)
+  let generation = ref 0 in
   let fetch =
     let%arr load and set_load in
     match load with
     | Load.Not_loaded ->
+      let%bind.Effect mine = Effect.of_thunk (fun () -> incr generation; !generation) in
       let%bind.Effect () = set_load Loading in
       let%bind.Effect result =
         Effect.of_deferred_thunk (fun () -> Git.Queries.status ())
       in
-      set_load (Loaded result)
+      let%bind.Effect current = Effect.of_thunk (fun () -> !generation) in
+      if current = mine then set_load (Loaded result) else Effect.Ignore
     | Loading | Loaded _ -> Effect.Ignore
   in
   Bonsai.Edge.before_display fetch graph;
@@ -72,6 +77,13 @@ let create (local_ graph) =
         | Set i -> clamp i)
       load
       graph
+  in
+  (* The action clamp keeps the MODEL in range per action; this derivation
+     keeps the EXPOSED cursor valid when the data itself changes (a refresh
+     that shrinks the entry list must not blank the pane or the selection). *)
+  let cursor =
+    let%arr load and cursor in
+    Int.clamp_exn cursor ~min:0 ~max:(Int.max 0 (List.length (entries_of_load load) - 1))
   in
   let selection =
     let%arr load and cursor in

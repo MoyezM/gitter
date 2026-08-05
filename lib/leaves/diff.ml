@@ -167,7 +167,8 @@ let content ~selection ~result =
         | Error e -> `Message ("git error: " ^ Error.to_string_hum e)
         | Ok payload ->
           (match flatten payload.files with
-           | [] -> `Message "no changes vs HEAD"
+           | [] when List.is_empty payload.files -> `Message "no changes vs HEAD"
+           | [] -> `Message "no text changes (binary or mode-only)"
            | lines -> `Lines (lines, payload.old_hl, payload.new_hl)))
      | Some _ | None -> `Message "loading diff...")
 ;;
@@ -190,6 +191,12 @@ let render ~lines ~cursor ~scroll ~(dimensions : Dimensions.t) =
   match lines with
   | `Message m -> seg Theme.context (" " ^ m)
   | `Lines (lines, old_hl, new_hl) ->
+    (* Resizes don't transition the state machine, so a grown pane can leave
+       a stale out-of-range scroll; clamp for display (actions re-clamp the
+       model itself). *)
+    let scroll =
+      Int.clamp_exn scroll ~min:0 ~max:(Int.max 0 (List.length lines - dimensions.height))
+    in
     let visible = List.take (List.drop lines scroll) dimensions.height in
     (* Freshly loaded diffs start with the cursor on the file header; show it
        on the first visible diff line instead of nowhere. *)
@@ -252,11 +259,14 @@ let snap lines ~dir i =
   Option.first_some first second |> Option.value ~default:i
 ;;
 
-(* Scroll so the cursor sits within scrolloff of neither edge. *)
+(* Scroll so the cursor sits within the margin of neither edge. The margin
+   shrinks below [scrolloff] on tiny panes — at full scrolloff a pane under
+   11 rows would invert the bounds and pin the cursor off-screen. *)
 let follow ~height ~count ~cursor scroll =
   let max_scroll = Int.max 0 (count - height) in
-  let lo = cursor - (height - 1 - scrolloff) in
-  let hi = cursor - scrolloff in
+  let margin = Int.min scrolloff (Int.max 0 ((height - 1) / 2)) in
+  let lo = cursor - (height - 1 - margin) in
+  let hi = cursor - margin in
   scroll |> Int.max lo |> Int.min hi |> Int.max 0 |> Int.min max_scroll
 ;;
 
@@ -335,31 +345,45 @@ let component ~(selection : string option Bonsai.t) : Widget.t =
       display_input
       graph
   in
+  let peek_selection = Bonsai.peek selection graph in
   let callback =
-    let%arr set_result and inject in
+    let%arr set_result and inject and peek_selection in
     fun (selection : string option) ->
       match selection with
       | None -> set_result None
       | Some path ->
+        (* Every write is guarded by the selection AT WRITE TIME: without
+           this, a slow fetch for a previously selected file lands last and
+           wedges the pane on "loading diff..." (the stale write survives
+           with no in-flight fetch left to correct it). The guard also stops
+           stale fetches early — no highlight parse for an off-screen file. *)
+        let when_current eff =
+          let%bind.Effect current = peek_selection in
+          match current with
+          | Bonsai.Computation_status.Active (Some sel) when String.equal sel path -> eff
+          | Active _ | Inactive -> Effect.Ignore
+        in
         let%bind.Effect () = inject Reset in
         let%bind.Effect fetched = Effect.of_deferred_thunk (fun () -> fetch_text path) in
         (match fetched with
-         | Error e -> set_result (Some (path, Error e))
+         | Error e -> when_current (set_result (Some (path, Error e)))
          | Ok (files, old_content, new_content) ->
            (* Two-phase: the diff text renders immediately (plain); the
               highlight sessions parse in their own domains and swap in when
               ready — frames never wait on a parse. *)
-           let%bind.Effect () =
-             set_result
-               (Some (path, Ok { files; old_hl = Highlight.empty; new_hl = Highlight.empty }))
-           in
-           let%bind.Effect old_hl, new_hl =
-             Effect.of_deferred_thunk (fun () ->
-               Async.Deferred.both
-                 (Highlight.create ~path old_content)
-                 (Highlight.create ~path new_content))
-           in
-           set_result (Some (path, Ok { files; old_hl; new_hl })))
+           when_current
+             (let%bind.Effect () =
+                set_result
+                  (Some
+                     (path, Ok { files; old_hl = Highlight.empty; new_hl = Highlight.empty }))
+              in
+              let%bind.Effect old_hl, new_hl =
+                Effect.of_deferred_thunk (fun () ->
+                  Async.Deferred.both
+                    (Highlight.create ~path old_content)
+                    (Highlight.create ~path new_content))
+              in
+              when_current (set_result (Some (path, Ok { files; old_hl; new_hl })))))
   in
   Bonsai.Edge.on_change ~equal:[%equal: string option] ~callback selection graph;
   let view =

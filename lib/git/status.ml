@@ -35,6 +35,44 @@ module Entry = struct
     }
 end
 
+(* git C-quotes paths containing special bytes (core.quotePath, on by
+   default for non-ASCII): the path arrives wrapped in double-quote chars
+   with backslash escapes — quote, backslash, t, n, r, and 3-digit octal.
+   Downstream git commands need the REAL bytes, so unquote at the parsing
+   edge. *)
+let unquote path =
+  let n = String.length path in
+  if n < 2 || (not (Char.equal path.[0] '"')) || not (Char.equal path.[n - 1] '"')
+  then path
+  else (
+    let body = String.sub path ~pos:1 ~len:(n - 2) in
+    let buf = Buffer.create (String.length body) in
+    let octal i =
+      let digit j = Char.to_int body.[j] - Char.to_int '0' in
+      Buffer.add_char buf (Char.of_int_exn ((digit i * 64) + (digit (i + 1) * 8) + digit (i + 2)))
+    in
+    let rec go i =
+      if i >= String.length body
+      then ()
+      else if Char.equal body.[i] '\\' && i + 1 < String.length body
+      then (
+        match body.[i + 1] with
+        | 't' -> Buffer.add_char buf '\t'; go (i + 2)
+        | 'n' -> Buffer.add_char buf '\n'; go (i + 2)
+        | 'r' -> Buffer.add_char buf '\r'; go (i + 2)
+        | '0' .. '7' when i + 3 < String.length body -> octal (i + 1); go (i + 4)
+        | c ->
+          (* escaped quote, backslash, and anything else: the char itself *)
+          Buffer.add_char buf c;
+          go (i + 2))
+      else (
+        Buffer.add_char buf body.[i];
+        go (i + 1))
+    in
+    go 0;
+    Buffer.contents buf)
+;;
+
 (* The path is everything after the first [n] space-separated fields. *)
 let path_after_fields line ~n =
   let rec skip pos remaining =
@@ -56,22 +94,27 @@ let parse_line line : Entry.t option =
   | "1" ->
     Option.both (xy line) (path_after_fields line ~n:8)
     |> Option.map ~f:(fun ((index, worktree), path) ->
-      { Entry.index; worktree; path; kind = Changed })
+      { Entry.index; worktree; path = unquote path; kind = Changed })
   | "2" ->
     Option.both (xy line) (path_after_fields line ~n:9)
     |> Option.bind ~f:(fun ((index, worktree), tail) ->
       match String.lsplit2 tail ~on:'\t' with
       | Some (path, orig) ->
-        Some { Entry.index; worktree; path; kind = Renamed { from = orig } }
-      | None -> Some { Entry.index; worktree; path = tail; kind = Changed })
+        Some
+          { Entry.index
+          ; worktree
+          ; path = unquote path
+          ; kind = Renamed { from = unquote orig }
+          }
+      | None -> Some { Entry.index; worktree; path = unquote tail; kind = Changed })
   | "u" ->
     Option.both (xy line) (path_after_fields line ~n:10)
     |> Option.map ~f:(fun ((index, worktree), path) ->
-      { Entry.index; worktree; path; kind = Unmerged })
+      { Entry.index; worktree; path = unquote path; kind = Unmerged })
   | "?" ->
     path_after_fields line ~n:1
     |> Option.map ~f:(fun path ->
-      { Entry.index = '?'; worktree = '?'; path; kind = Untracked })
+      { Entry.index = '?'; worktree = '?'; path = unquote path; kind = Untracked })
   | _ -> None (* headers, ignored lines *)
 ;;
 

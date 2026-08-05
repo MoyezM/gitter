@@ -36,7 +36,10 @@ let () =
   check "scrolls down to keep margin" (D.follow ~height ~count ~cursor:30 5 = 30 - (height - 1 - D.scrolloff));
   check "scrolls up to keep margin" (D.follow ~height ~count ~cursor:6 10 = 6 - D.scrolloff);
   check "clamps at top" (D.follow ~height ~count ~cursor:0 50 = 0);
-  check "clamps at bottom" (D.follow ~height ~count ~cursor:99 0 = count - height)
+  check "clamps at bottom" (D.follow ~height ~count ~cursor:99 0 = count - height);
+  (* Tiny panes: the margin shrinks so the cursor stays on-screen. *)
+  check "tiny pane keeps cursor visible" (D.follow ~height:5 ~count:100 ~cursor:50 0 = 48);
+  check "one-row pane pins to cursor" (D.follow ~height:1 ~count:100 ~cursor:7 0 = 7)
 ;;
 
 (* wheel: flat step per tick (velocity comes from the terminal's event

@@ -17,6 +17,7 @@ let porcelain_sample =
     ; "u UU N... 100644 100644 100644 100644 a b c lib/conflict.ml"
     ; "? test/scratch.ml"
     ; "1 .M N... 100644 100644 100644 abc1 abc2 docs/with space.md"
+    ; "1 .M N... 100644 100644 100644 abc1 abc2 \"h\\303\\251llo.ml\""
     ]
 ;;
 
@@ -27,7 +28,12 @@ let find path =
 ;;
 
 let () =
-  check "entry count (headers skipped)" (List.length entries = 7);
+  check "entry count (headers skipped)" (List.length entries = 8);
+  (* core.quotePath: non-ASCII paths arrive C-quoted with octal escapes and
+     must be unquoted to the real bytes, or every git command on them fails. *)
+  check
+    "quoted path unquoted"
+    (List.exists entries ~f:(fun e -> String.equal e.path "h\195\169llo.ml"));
   let unstaged = find "lib/app.ml" in
   check "unstaged: XY chars" (Char.equal unstaged.index '.' && Char.equal unstaged.worktree 'M');
   let staged = find "bin/main.ml" in

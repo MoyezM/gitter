@@ -8,20 +8,15 @@ open! Bonsai_term
 
 let seg attrs s = View.text ~attrs s
 
-(* Fuzzy-ish: the query's characters must appear in the label, in order. *)
+(* Fuzzy-ish: the query's characters must appear in the label, in order —
+   a greedy scan that counts how far into the query the label gets. *)
 let matches ~query label =
-  let label = String.lowercase label in
   let query = String.lowercase query in
-  let rec go qi li =
-    if qi >= String.length query
-    then true
-    else if li >= String.length label
-    then false
-    else if Char.equal query.[qi] label.[li]
-    then go (qi + 1) (li + 1)
-    else go qi (li + 1)
-  in
-  go 0 0
+  let label = String.lowercase label in
+  let qlen = String.length query in
+  qlen
+  = String.fold label ~init:0 ~f:(fun qi c ->
+      if qi < qlen && Char.equal query.[qi] c then qi + 1 else qi)
 ;;
 
 let filter ~query flats =
@@ -33,7 +28,7 @@ let dim_attrs = [ Attr.fg Theme.dim ]
 let pad_to width s = s ^ String.make (Int.max 0 (width - String.length s)) ' '
 
 let render ~filtered ~total ~query ~cursor ~(dimensions : Dimensions.t) =
-  let width = Int.max 34 (Int.min 64 (dimensions.width - 6)) in
+  let width = Int.clamp_exn (dimensions.width - 6) ~min:34 ~max:64 in
   let label_col = width - 16 in
   let input_row =
     let count = sprintf "%d/%d " (List.length filtered) total in
@@ -54,7 +49,7 @@ let render ~filtered ~total ~query ~cursor ~(dimensions : Dimensions.t) =
   let visible = Int.max 3 (Int.min (dimensions.height - 6) (List.length filtered)) in
   let offset = Int.max 0 (cursor - visible + 1) in
   let rows =
-    List.filteri filtered ~f:(fun i _ -> i >= offset && i < offset + visible)
+    List.take (List.drop filtered offset) visible
     |> List.mapi ~f:(fun i (f : Commands.Flat.t) ->
       let selected = i + offset = cursor in
       let marker = if selected then "> " else "  " in

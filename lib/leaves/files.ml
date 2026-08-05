@@ -44,7 +44,7 @@ let render ~(load : Git_data.Load.t) ~cursor ~(dimensions : Dimensions.t) =
   | Loaded (Ok entries) ->
     let offset = Int.max 0 (cursor - dimensions.height + 1) in
     let rows =
-      List.filteri entries ~f:(fun i _ -> i >= offset && i < offset + dimensions.height)
+      List.take (List.drop entries offset) dimensions.height
       |> List.mapi ~f:(fun i entry ->
         row ~width:dimensions.width ~selected:(i + offset = cursor) entry)
     in

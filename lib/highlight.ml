@@ -50,33 +50,28 @@ let spec_for_ext ext =
   | None -> Grammar_registry.find ext
 ;;
 
-let spec_for_path path =
-  Option.bind (snd (Filename.split_extension path)) ~f:spec_for_ext
-;;
-
 let line_starts content =
-  let starts = ref [ 0 ] in
-  String.iteri content ~f:(fun i c -> if Char.equal c '\n' then starts := (i + 1) :: !starts);
-  Array.of_list (List.rev !starts)
+  String.foldi content ~init:[ 0 ] ~f:(fun i acc c ->
+    if Char.equal c '\n' then (i + 1) :: acc else acc)
+  |> List.rev
+  |> Array.of_list
 ;;
 
 (* Query objects are cheap (~2ms) but per-language, not per-file. The cache
    only runs on the main domain. *)
 let query_cache : (string, Tree_sitter.Query.t) Hashtbl.t = Hashtbl.create (module String)
 
-let query_for ~path =
-  match snd (Filename.split_extension path) with
-  | None -> None
-  | Some ext ->
-    (match spec_for_ext ext with
-     | None -> None
-     | Some (language, source) ->
-       (try
-          Some
-            (Hashtbl.find_or_add query_cache ext ~default:(fun () ->
-               Tree_sitter.Query.create (language ()) ~source))
-        with
-        | _ -> None))
+(* The one owner of "path -> (language, query)": extension split, spec
+   lookup, query cache. None means "don't highlight" — including when the
+   grammar or query fails to load. *)
+let session_spec ~path =
+  let open Option.Let_syntax in
+  let%bind ext = snd (Filename.split_extension path) in
+  let%bind language, source = spec_for_ext ext in
+  Option.try_with (fun () ->
+    ( language ()
+    , Hashtbl.find_or_add query_cache ext ~default:(fun () ->
+        Tree_sitter.Query.create (language ()) ~source) ))
 ;;
 
 let build ~language ~query content =
@@ -90,27 +85,20 @@ let build ~language ~query content =
 
 (* Synchronous create: parses on the calling domain. For tests/benchmarks. *)
 let create_sync ~path content : t =
-  match spec_for_path path, query_for ~path with
-  | Some (language, _), Some query ->
-    (try build ~language:(language ()) ~query content with
-     | _ -> None)
-  | _ -> None
+  Option.bind (session_spec ~path) ~f:(fun (language, query) ->
+    build ~language ~query content)
 ;;
 
 (* Async create: the parse runs in its own domain via [Cpu.in_domain] — the
    C stubs never release the runtime lock, so parsing on the scheduler would
-   stall every frame. *)
+   stall every frame. (The try covers [Domain.spawn] itself, e.g. domain
+   exhaustion: highlighting failure must never break the diff view.) *)
 let create ~path content : t Async.Deferred.t =
-  match spec_for_path path, query_for ~path with
-  | Some (language, _), Some query ->
-    (try
-       let language = language () in
-       Cpu.in_domain (fun () ->
-         try build ~language ~query content with
-         | _ -> None)
-     with
+  match session_spec ~path with
+  | None -> Async.return None
+  | Some (language, query) ->
+    (try Cpu.in_domain (fun () -> build ~language ~query content) with
      | _ -> Async.return None)
-  | _ -> Async.return None
 ;;
 
 let line_end t i = if i + 1 < Array.length t.starts then t.starts.(i + 1) - 1 else t.length

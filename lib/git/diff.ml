@@ -41,16 +41,14 @@ end
    verbatim minus the "b/" prefix. *)
 let path_of_header line =
   match String.rsplit2 line ~on:' ' with
-  | Some (_, b_path) -> String.chop_prefix b_path ~prefix:"b/" |> Option.value ~default:b_path
+  | Some (_, b_path) -> String.chop_prefix_if_exists b_path ~prefix:"b/"
   | None -> line
 ;;
 
 (* "@@ -13,22 +13,17 @@ ..." -> (13, 13). Counts are optional ("-13 +13"). *)
 let hunk_starts header =
   let start_of token =
-    String.drop_prefix token 1 (* the sign *)
-    |> String.lsplit2 ~on:','
-    |> Option.value_map ~default:(String.drop_prefix token 1) ~f:fst
+    String.take_while (String.drop_prefix token 1 (* the sign *)) ~f:Char.is_digit
     |> Int.of_string_opt
     |> Option.value ~default:0
   in

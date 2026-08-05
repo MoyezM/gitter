@@ -30,26 +30,17 @@ let label = function
 
 let find entries c = List.find entries ~f:(fun entry -> Char.equal (key entry) c)
 
-(* The entries visible after pressing the keys in [path], if the path still
-   resolves to a group. *)
-let rec at_path entries path =
+(* The group reached by pressing the keys in [path]: its popup title (the
+   group's label, helix-style; "Space" at the root) and its entries. None if
+   the path no longer resolves to a group. *)
+let rec resolve ?(title = "Space") entries path =
   match path with
-  | [] -> Some entries
-  | c :: rest ->
-    (match find entries c with
-     | Some (Group { children; _ }) -> at_path children rest
-     | Some (Action _) | None -> None)
-;;
-
-(* The popup title for a path: the group's label, helix-style. *)
-let rec title_at entries path =
-  match path with
-  | [] -> "Space"
+  | [] -> Some (title, entries)
   | c :: rest ->
     (match find entries c with
      | Some (Group { label; children; _ }) ->
-       if List.is_empty rest then String.capitalize label else title_at children rest
-     | Some (Action _) | None -> "Space")
+       resolve ~title:(String.capitalize label) children rest
+     | Some (Action _) | None -> None)
 ;;
 
 (* The flat projection for the command palette: every action with the key

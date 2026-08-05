@@ -15,10 +15,9 @@ let overlay ~(model : State.Model.t) ~commands ~dimensions ~base =
   match model with
   | Closed -> base
   | Menu path ->
-    (match Commands.at_path commands path with
-     | None | Some [] -> base
-     | Some entries ->
-       let title = Commands.title_at commands path in
+    (match Commands.resolve commands path with
+     | None | Some (_, []) -> base
+     | Some (title, entries) ->
        View.zcat [ Render.render ~entries ~title ~dimensions; base ])
   | Palette { query; cursor } ->
     let flats = Commands.flatten commands in
@@ -35,7 +34,11 @@ let handle_menu ~inject ~commands ~path (event : Event.t) =
   | Key_press { key = Escape; _ } | Key_press { key = ASCII ' '; mods = [] } ->
     inject State.Action.Close
   | Key_press { key = ASCII c; mods = [] } ->
-    (match Option.bind (Commands.at_path commands path) ~f:(fun es -> Commands.find es c) with
+    let entry =
+      Option.bind (Commands.resolve commands path) ~f:(fun (_title, entries) ->
+        Commands.find entries c)
+    in
+    (match entry with
      | Some (Commands.Action { effect; _ }) ->
        Effect.Many [ inject State.Action.Close; effect ]
      | Some (Group _) -> inject (Descend c)
@@ -45,17 +48,18 @@ let handle_menu ~inject ~commands ~path (event : Event.t) =
 ;;
 
 let handle_palette ~inject ~commands ~query ~cursor (event : Event.t) =
-  let filtered = Palette.filter ~query (Commands.flatten commands) in
+  (* Deferred: only the Enter and Arrow-Down arms need the filtered list. *)
+  let filtered () = Palette.filter ~query (Commands.flatten commands) in
   match event with
   | Event.Key_press { key = Escape; _ } -> inject State.Action.Close
   | Key_press { key = Enter; _ } ->
-    (match List.nth filtered cursor with
+    (match List.nth (filtered ()) cursor with
      | Some (f : Commands.Flat.t) -> Effect.Many [ inject State.Action.Close; f.effect ]
      | None -> inject Close)
   | Key_press { key = Backspace; _ } -> inject Query_backspace
   | Key_press { key = Arrow `Up; _ } -> inject (Set_cursor (Int.max 0 (cursor - 1)))
   | Key_press { key = Arrow `Down; _ } ->
-    inject (Set_cursor (Int.max 0 (Int.min (List.length filtered - 1) (cursor + 1))))
+    inject (Set_cursor (Int.max 0 (Int.min (List.length (filtered ()) - 1) (cursor + 1))))
   | Key_press { key = ASCII c; mods = [] } -> inject (Query_append c)
   | Key_press _ | Paste _ | Mouse _ -> Effect.Ignore
 ;;

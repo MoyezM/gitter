@@ -42,9 +42,7 @@ let fetch_text path =
   let%bind diff in
   let%bind old_content in
   let%bind new_content in
-  match diff with
-  | Error e -> return (Error e)
-  | Ok files -> return (Ok (files, old_content, new_content))
+  return (Or_error.map diff ~f:(fun files -> files, old_content, new_content))
 ;;
 
 type display_line =
@@ -131,51 +129,61 @@ let render_line ~width ~old_spans ~new_spans ~cursor_here = function
     let gutter = seg gutter_attrs (number old_no ^ number new_no) in
     (* Two number columns (5 wide each) plus the 2-wide bar column. *)
     let content_width = Int.max 1 (width - 12) in
-    let spans =
-      match line with
-      | Git.Diff.Line.Removed _ -> Option.value_map old_no ~default:[] ~f:old_spans
-      | Added _ | Context _ -> Option.value_map new_no ~default:[] ~f:new_spans
-    in
+    (* Each side's spans are looked up by that side's line number; removed
+       lines highlight from the HEAD blob, added/context from the worktree. *)
+    let spans no side = Option.value_map no ~default:[] ~f:side in
     let bar, content =
       match line with
-      | Added s ->
+      | Git.Diff.Line.Added s ->
         ( seg Theme.added_bar "\u{258E} "
-        , spans_view ~base:[ Attr.bg Theme.added_bg ] ~spans ~width:content_width s )
+        , spans_view
+            ~base:[ Attr.bg Theme.added_bg ]
+            ~spans:(spans new_no new_spans)
+            ~width:content_width
+            s )
       | Removed s ->
         ( seg Theme.removed_bar "\u{258E} "
-        , spans_view ~base:[ Attr.bg Theme.removed_bg ] ~spans ~width:content_width s )
-      | Context s -> seg Theme.context "  ", spans_view ~base:[] ~spans ~width:content_width s
+        , spans_view
+            ~base:[ Attr.bg Theme.removed_bg ]
+            ~spans:(spans old_no old_spans)
+            ~width:content_width
+            s )
+      | Context s ->
+        ( seg Theme.context "  "
+        , spans_view ~base:[] ~spans:(spans new_no new_spans) ~width:content_width s )
     in
     View.hcat [ gutter; bar; content ]
 ;;
 
-(* What the pane should show, staleness-checked. *)
+(* What the pane should show. One arm owns freshness: only a result tagged
+   with the CURRENT selection's path renders; anything else is still loading. *)
 let content ~selection ~result =
-  match selection, result with
-  | None, _ -> `Message "no file selected"
-  | Some _, None -> `Message "loading diff..."
-  | Some sel, Some (path, _) when not (String.equal sel path) -> `Message "loading diff..."
-  | Some _, Some (_, Error e) -> `Message ("git error: " ^ Error.to_string_hum e)
-  | Some _, Some (_, Ok payload) ->
-    (match flatten payload.files with
-     | [] -> `Message "no changes vs HEAD"
-     | lines -> `Lines (lines, payload.old_hl, payload.new_hl))
+  match selection with
+  | None -> `Message "no file selected"
+  | Some sel ->
+    (match result with
+     | Some (path, r) when String.equal sel path ->
+       (match r with
+        | Error e -> `Message ("git error: " ^ Error.to_string_hum e)
+        | Ok payload ->
+          (match flatten payload.files with
+           | [] -> `Message "no changes vs HEAD"
+           | lines -> `Lines (lines, payload.old_hl, payload.new_hl)))
+     | Some _ | None -> `Message "loading diff...")
 ;;
 
 (* The visible slice's line-number ranges on each side, for windowed
    highlight queries. *)
 let side_ranges visible =
-  List.fold visible ~init:(None, None) ~f:(fun (old_r, new_r) line ->
-    match line with
-    | Diff_line (o, n, _) ->
-      let extend r v =
-        match r, v with
-        | r, None -> r
-        | None, Some v -> Some (v, v)
-        | Some (lo, hi), Some v -> Some (Int.min lo v, Int.max hi v)
-      in
-      extend old_r o, extend new_r n
-    | File_header _ | Hunk_header _ -> old_r, new_r)
+  let nums side =
+    List.filter_map visible ~f:(function
+      | Diff_line (o, n, _) -> side (o, n)
+      | File_header _ | Hunk_header _ -> None)
+  in
+  let range l =
+    Option.both (List.min_elt l ~compare:Int.compare) (List.max_elt l ~compare:Int.compare)
+  in
+  range (nums fst), range (nums snd)
 ;;
 
 let render ~lines ~cursor ~scroll ~(dimensions : Dimensions.t) =
@@ -262,8 +270,12 @@ let move_cursor state lines ~height ~by =
 (* Wheel scrolls the VIEW; the cursor is then clamped to stay visible. *)
 let wheel state lines ~height ~dir =
   let count = List.length lines in
-  let step = wheel_step * dir in
-  let scroll = Int.max 0 (Int.min (Int.max 0 (count - height)) (state.scroll + step)) in
+  let scroll =
+    Int.clamp_exn
+      (state.scroll + (wheel_step * dir))
+      ~min:0
+      ~max:(Int.max 0 (count - height))
+  in
   let cursor =
     state.cursor
     |> Int.max scroll

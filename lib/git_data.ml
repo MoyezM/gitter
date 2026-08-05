@@ -65,7 +65,7 @@ let create (local_ graph) =
           | Bonsai.Computation_status.Active load -> List.length (entries_of_load load)
           | Inactive -> 0
         in
-        let clamp c = Int.max 0 (Int.min (Int.max 0 (count - 1)) c) in
+        let clamp c = Int.clamp_exn c ~min:0 ~max:(Int.max 0 (count - 1)) in
         match action with
         | Move `Up -> clamp (cursor - 1)
         | Move `Down -> clamp (cursor + 1)

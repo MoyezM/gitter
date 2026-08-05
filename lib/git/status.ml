@@ -48,11 +48,8 @@ let path_after_fields line ~n =
   skip 0 n
 ;;
 
-let xy line =
-  match String.split line ~on:' ' with
-  | _tag :: xy :: _ when String.length xy = 2 -> Some (xy.[0], xy.[1])
-  | _ -> None
-;;
+(* XY sits at fixed bytes 2-3 on "1"/"2"/"u" lines: tag, space, XY. *)
+let xy line = if String.length line > 3 then Some (line.[2], line.[3]) else None
 
 let parse_line line : Entry.t option =
   match String.prefix line 1 with

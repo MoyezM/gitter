@@ -18,8 +18,15 @@ fi
 
 if [ ! -d "$(opam var root 2>/dev/null || echo ~/.opam)" ]; then
   echo "== initializing opam (no root found)"
-  opam init --bare --no-setup
+  opam init --bare --no-setup --yes
 fi
+
+# System deps come from the nix dev shell, not Homebrew/MacPorts — stop opam
+# from consulting the system package manager. MUST happen before switch
+# create: the compiler build depexts autoconf, and on a machine WITH brew
+# (CI runners) opam would prompt to install it and abort non-interactively —
+# even though the nix shell already has it on PATH.
+opam option --global depext=false >/dev/null 2>&1 || true
 
 if opam switch list --short 2>/dev/null | grep -qx "$SWITCH"; then
   echo "== switch $SWITCH already exists"
@@ -29,10 +36,6 @@ else
 fi
 
 eval "$(opam env --switch="$SWITCH" --set-switch)"
-
-# System deps come from the nix dev shell, not Homebrew/MacPorts — stop opam
-# from looking for them.
-opam option --global depext=false >/dev/null 2>&1 || true
 
 echo "== installing gitter dependencies"
 opam install "$root" --deps-only --yes

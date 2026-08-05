@@ -1,26 +1,30 @@
 open! Core
 open! Bonsai_term
 
-(** The embedded editor: a fullscreen overlay hosting [$EDITOR <file>] in a
-    [Terminal.Session] (real pty + libvterm), toggleable to the background
-    (Ctrl-T both ways) while the process keeps running. Spawned in the
-    working directory gitter was launched from. While an editor is live,
-    opening another file only foregrounds the existing session — keys are
-    never injected into a running editor. When the editor exits, any key
-    returns to gitter (the 2s status poller picks up the file changes). *)
+(** The shell overlay: a padded modal terminal running [$SHELL] in the
+    repo root, for quick git/gt commands. Ctrl-T toggles both ways (the
+    shell keeps running while hidden); exiting the shell closes the
+    overlay. Hiding or shell exit fires [on_hide] — the app passes an
+    immediate git refresh so mutations show up without waiting for the
+    poller. While visible, Ctrl-C is CAPTURED for the shell (SIGINT) and
+    [on_ctrl_c] fires — the app posts a "Ctrl-T to leave" hint — so
+    quit-gitter never triggers from inside the terminal. *)
 
 type t
 
-val create : dimensions:Dimensions.t Bonsai.t -> local_ Bonsai.graph -> t
+val create
+  :  dimensions:Dimensions.t Bonsai.t
+  -> on_hide:unit Effect.t Bonsai.t
+  -> on_ctrl_c:unit Effect.t Bonsai.t
+  -> local_ Bonsai.graph
+  -> t
 
 module Controls : sig
-  type t =
-    { open_file : string -> unit Effect.t
-    ; toggle : unit Effect.t (** no-op until something has been opened *)
-    }
+  type t = { toggle : unit Effect.t }
 end
 
 val controls : t -> Controls.t Bonsai.t
 
-(** Wrap the app: replaces the view and consumes all events while visible. *)
+(** Wrap the app: overlays the terminal and consumes events while
+    visible; Ctrl-T is intercepted in both states. *)
 val wrap : t -> Widget.t -> Widget.t

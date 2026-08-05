@@ -89,7 +89,18 @@ let send_key t (key : Event.Key.t) (mods : Event.Modifier.t list) =
   | Some code -> raw_key_special t.raw code m
   | None ->
     (match key with
-     | ASCII c -> raw_key_unichar t.raw (Char.to_int c) m
+     | ASCII c ->
+       (* notty reports Ctrl+letter as UPPERCASE, but libvterm CSIu-encodes
+          (kitty protocol) any Ctrl+char EXCEPT lowercase a-z — plain
+          shells don't speak CSIu, so Ctrl-C would arrive as ESC[67;5u
+          instead of 0x03. Lowercase unless Shift is genuinely held. *)
+       let has m = List.exists mods ~f:(fun x -> phys_equal x m) in
+       let c =
+         if has Event.Modifier.Ctrl && not (has Event.Modifier.Shift)
+         then Char.lowercase c
+         else c
+       in
+       raw_key_unichar t.raw (Char.to_int c) m
      | Uchar u -> raw_key_unichar t.raw (Uchar.to_scalar u) m
      | _ -> ())
 ;;
@@ -117,14 +128,41 @@ let send_mouse t (kind : Event.mouse_kind) ~row ~col ~(mods : Event.Modifier.t l
 
 let attr_cache : (string, Attr.t list) Hashtbl.t = Hashtbl.create (module String)
 
+(* Indexed colors pass through symbolically so the HOST terminal resolves
+   them against the user's own palette (how tmux "inherits" colors).
+   0-15 as named ANSI (SGR 30-37/90-97) so host features like
+   bold-renders-bright still apply; 16-255 via 38;5;n. *)
+let indexed_color idx =
+  let module C = Attr.Color.Expert in
+  match idx with
+  | 0 -> C.black
+  | 1 -> C.red
+  | 2 -> C.green
+  | 3 -> C.yellow
+  | 4 -> C.blue
+  | 5 -> C.magenta
+  | 6 -> C.cyan
+  | 7 -> C.white
+  | 8 -> C.lightblack
+  | 9 -> C.lightred
+  | 10 -> C.lightgreen
+  | 11 -> C.lightyellow
+  | 12 -> C.lightblue
+  | 13 -> C.lightmagenta
+  | 14 -> C.lightcyan
+  | 15 -> C.lightwhite
+  | idx -> Attr.Color.xterm_256 idx
+;;
+
 let attrs_of_packed style_key =
   Hashtbl.find_or_add attr_cache style_key ~default:(fun () ->
     let b = style_key in
     let bits = Char.to_int b.[0] in
     let color which tag r g bl =
-      if Char.to_int b.[tag] = 0
-      then None
-      else
+      match Char.to_int b.[tag] with
+      | 0 -> None
+      | 2 -> Some (which (indexed_color (Char.to_int b.[r])))
+      | _ ->
         Some
           (which
              (Attr.Color.rgb
@@ -205,7 +243,10 @@ let cell_style t ~r ~c =
   let base = c * cell_bytes in
   let byte i = Char.to_int (Bytes.get t.row_buf (base + i)) in
   let color tag rr gg bb =
-    if byte tag = 0 then None else Some (byte rr, byte gg, byte bb)
+    match byte tag with
+    | 0 -> `Default
+    | 2 -> `Indexed (byte rr)
+    | _ -> `Rgb (byte rr, byte gg, byte bb)
   in
   ( `Attrs (byte 9)
   , `Fg (color 10 11 12 13)

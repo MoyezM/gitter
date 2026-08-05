@@ -25,18 +25,26 @@ let () =
   check_s "cursor addressing" ~expect:"    mid" (Vterm.row_text t 2);
   let r, c, visible = Vterm.cursor t in
   check "cursor position" (r = 2 && c = 7 && visible);
-  (* SGR colors reach the packed cells *)
+  (* SGR colors reach the packed cells; indexed colors stay SYMBOLIC so
+     the host terminal resolves them with the user's palette *)
   let t = fresh () in
   Vterm.feed_string t "\x1b[1m\x1b[38;2;255;0;0mR\x1b[0m";
   let `Attrs attrs, `Fg fg, `Bg bg = Vterm.cell_style t ~r:0 ~c:0 in
   check "bold bit" (attrs land 1 <> 0);
-  check "rgb fg" (match fg with Some (255, 0, 0) -> true | _ -> false);
-  check "default bg" (Option.is_none bg);
-  (* 256-color converts to rgb *)
+  check "truecolor fg stays rgb" (match fg with `Rgb (255, 0, 0) -> true | _ -> false);
+  check "default bg" (match bg with `Default -> true | _ -> false);
+  let t = fresh () in
+  Vterm.feed_string t "\x1b[31mR\x1b[94mB\x1b[0m";
+  let _, `Fg red, _ = Vterm.cell_style t ~r:0 ~c:0 in
+  let _, `Fg bright_blue, _ = Vterm.cell_style t ~r:0 ~c:1 in
+  check "ansi fg passes through as index" (match red with `Indexed 1 -> true | _ -> false);
+  check
+    "bright ansi fg passes through"
+    (match bright_blue with `Indexed 12 -> true | _ -> false);
   let t = fresh () in
   Vterm.feed_string t "\x1b[48;5;196mX\x1b[0m";
   let _, _, `Bg bg = Vterm.cell_style t ~r:0 ~c:0 in
-  check "256-color bg converts to rgb" (Option.is_some bg);
+  check "256-color bg passes through" (match bg with `Indexed 196 -> true | _ -> false);
   (* erase + rewrite (the tear-prone path under snapshots) *)
   let t = fresh () in
   Vterm.feed_string t "aaaaa\r\x1b[Kbbb";
@@ -76,6 +84,12 @@ let () =
   check_s "key a" ~expect:"a" (Vterm.take_output t);
   Vterm.send_key t (ASCII 'c') [ Ctrl ];
   check_s "ctrl-c" ~expect:"\x03" (Vterm.take_output t);
+  (* notty delivers Ctrl+letter as UPPERCASE — must still encode 0x03,
+     not libvterm's CSIu (ESC[67;5u), which plain shells print as junk *)
+  Vterm.send_key t (ASCII 'C') [ Ctrl ];
+  check_s "ctrl-c (uppercase, the notty form)" ~expect:"\x03" (Vterm.take_output t);
+  Vterm.send_key t (ASCII 'R') [ Ctrl ];
+  check_s "ctrl-r (uppercase)" ~expect:"\x12" (Vterm.take_output t);
   Vterm.send_key t (Arrow `Up) [];
   check_s "arrow (normal mode)" ~expect:"\x1b[A" (Vterm.take_output t);
   Vterm.feed_string t "\x1b[?1h";

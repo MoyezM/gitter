@@ -208,9 +208,15 @@ CAMLprim value gt_vterm_cursor(value v_t) {
    [0]      utf8 length (0 = width-continuation cell, skip)
    [1..8]   utf8 bytes (base char + combining)
    [9]      attr bits: 1 bold, 2 italic, 4 underline, 8 reverse
-   [10]     fg tag: 0 default, 1 rgb   [11..13] rgb
-   [14]     bg tag: 0 default, 1 rgb   [15..17] rgb
-   [18]     cell width                  [19] pad */
+   [10]     fg tag: 0 default, 1 rgb, 2 indexed
+            [11..13] rgb, or [11] palette index
+   [14]     bg tag (same scheme)       [15..17] rgb / [15] index
+   [18]     cell width                  [19] pad
+
+   Indexed colors are passed through UNRESOLVED (no convert_color_to_rgb):
+   the renderer re-emits them as ANSI/xterm-256 indices so the HOST
+   terminal resolves them against the user's own palette — the tmux trick
+   that makes the embedded shell's colors match the outer terminal. */
 static int put_utf8(unsigned char *dst, uint32_t cp) {
   if (cp < 0x80) {
     dst[0] = cp;
@@ -261,18 +267,26 @@ CAMLprim value gt_vterm_read_row(value v_t, value v_row, value v_cols,
                   (cell.attrs.underline ? 4 : 0) | (cell.attrs.reverse ? 8 : 0);
     VTermColor fg = cell.fg, bg = cell.bg;
     if (!VTERM_COLOR_IS_DEFAULT_FG(&fg)) {
-      vterm_screen_convert_color_to_rgb(t->screen, &fg);
-      cell_buf[10] = 1;
-      cell_buf[11] = fg.rgb.red;
-      cell_buf[12] = fg.rgb.green;
-      cell_buf[13] = fg.rgb.blue;
+      if (VTERM_COLOR_IS_INDEXED(&fg)) {
+        cell_buf[10] = 2;
+        cell_buf[11] = fg.indexed.idx;
+      } else {
+        cell_buf[10] = 1;
+        cell_buf[11] = fg.rgb.red;
+        cell_buf[12] = fg.rgb.green;
+        cell_buf[13] = fg.rgb.blue;
+      }
     }
     if (!VTERM_COLOR_IS_DEFAULT_BG(&bg)) {
-      vterm_screen_convert_color_to_rgb(t->screen, &bg);
-      cell_buf[14] = 1;
-      cell_buf[15] = bg.rgb.red;
-      cell_buf[16] = bg.rgb.green;
-      cell_buf[17] = bg.rgb.blue;
+      if (VTERM_COLOR_IS_INDEXED(&bg)) {
+        cell_buf[14] = 2;
+        cell_buf[15] = bg.indexed.idx;
+      } else {
+        cell_buf[14] = 1;
+        cell_buf[15] = bg.rgb.red;
+        cell_buf[16] = bg.rgb.green;
+        cell_buf[17] = bg.rgb.blue;
+      }
     }
     cell_buf[18] = cell.width;
     if (cell.width == 0) cell_buf[0] = 0;

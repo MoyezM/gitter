@@ -53,5 +53,5 @@ val cell_style
   -> r:int
   -> c:int
   -> [ `Attrs of int ]
-     * [ `Fg of (int * int * int) option ]
-     * [ `Bg of (int * int * int) option ]
+     * [ `Fg of [ `Default | `Indexed of int | `Rgb of int * int * int ] ]
+     * [ `Bg of [ `Default | `Indexed of int | `Rgb of int * int * int ] ]

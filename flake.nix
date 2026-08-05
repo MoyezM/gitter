@@ -41,8 +41,8 @@
             autoconf
             # sqlite3 opam bindings (review-marks store)
             sqlite
-            # (libvterm-neovim was here for the embedded terminal — re-add
-            # it when reviving lib/terminal, see lib/terminal/README.md)
+            # embedded-terminal emulator (the shell overlay, lib/terminal/)
+            libvterm-neovim
             # scripts/add-grammar and the test harnesses
             curl
             git

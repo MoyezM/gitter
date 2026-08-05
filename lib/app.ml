@@ -185,8 +185,8 @@ let layout_tree ~(data : Git_data.t) ~commit ~copy_path =
       ])
 ;;
 
-let commands ~(layout : Layout.Component.Controls.t Bonsai.t) ~refresh ~commit =
-  let%arr layout and refresh and commit in
+let commands ~(layout : Layout.Component.Controls.t Bonsai.t) ~refresh ~commit ~terminal =
+  let%arr layout and refresh and commit and terminal in
   [ Menu.Commands.Group
       { key = 'w'
       ; label = "window"
@@ -213,9 +213,32 @@ let commands ~(layout : Layout.Component.Controls.t Bonsai.t) ~refresh ~commit =
       ; children =
           [ Action { key = 'r'; label = "reload status"; effect = refresh }
           ; Action { key = 'c'; label = "commit"; effect = commit }
+          ; Action { key = 't'; label = "terminal"; effect = terminal }
           ]
       }
   ]
+;;
+
+(* Ctrl-C quits — but only when the event reaches this layer. The shell
+   overlay wraps OUTSIDE it and, while visible, forwards Ctrl-C to the
+   shell as SIGINT (with a hint pointing at Ctrl-T), so quitting requires
+   leaving the terminal first. notty reports Ctrl-C as UPPERCASE ASCII
+   'C' (sometimes as a Uchar) — match every form, same as
+   [Bonsai_term.Loop.make_app_exit_on_ctrlc], which this replaces. *)
+let exit_on_ctrlc ~exit (base : Widget.t) : Widget.t =
+  fun ~dimensions (local_ graph) ->
+  let ~view, ~handler:base_handler = base ~dimensions graph in
+  let handler =
+    let%arr base_handler in
+    fun (event : Event.t) ->
+      match event with
+      | Key_press { key = ASCII ('C' | 'c'); mods = [ Ctrl ] } -> exit ()
+      | Key_press { key = Uchar u; mods = [ Ctrl ] }
+        when Uchar.equal (Uchar.of_char 'C') u || Uchar.equal (Uchar.of_char 'c') u ->
+        exit ()
+      | event -> base_handler event
+  in
+  ~view, ~handler
 ;;
 
 (* Context hints for the status bar: the focused pane's keys. *)
@@ -226,10 +249,10 @@ let hints ~focused =
   | "changes" -> "j/k:move  s:stage  d:discard  c:commit  y:copy path  Tab:pane"
   | "diff" -> "j/k:move  n/p:page  h/l:pan  s/u:\u{00B1}hunk  y:copy path"
   | "stack" -> "j/k:move  h/l:fold  Enter:set base  Space:menu  Tab:pane"
-  | _ -> "Space:menu  Tab:focus  Ctrl-C:quit"
+  | _ -> "Space:menu  Tab:focus  C-t:term  Ctrl-C:quit"
 ;;
 
-let app ~(dimensions : Dimensions.t Bonsai.t) (local_ graph)
+let app ~exit ~(dimensions : Dimensions.t Bonsai.t) (local_ graph)
   : view:View.t Bonsai.t * handler:(Event.t -> unit Effect.t) Bonsai.t
   =
   let screen_dimensions =
@@ -240,30 +263,38 @@ let app ~(dimensions : Dimensions.t Bonsai.t) (local_ graph)
   in
   let modal_model, inject_modal = Modal.Component.state graph in
   let modal_controls = Modal.Component.controls ~inject:inject_modal in
-  (* The status-bar notice: red errors from git mutations, dim transient
-     info flashes ("copied ..."), which self-clear unless something newer
-     replaced them. *)
+  (* Status-bar notifications: ONE slot, the bottom-right (where the key
+     hints live). [notify] takes the slot over for 5s, then it falls back
+     to the hints — which are derived live from the focused pane, so
+     whatever they say at expiry is what returns. A newer notification
+     restarts the window (the generation guard disarms stale timers). *)
   let notice, set_notice = Bonsai.state None graph in
-  let flash_generation = ref 0 in
-  let set_error_notice =
+  let notice_generation = ref 0 in
+  let notify =
     let%arr set_notice in
-    fun message -> set_notice (Option.map message ~f:(fun m -> m, `Error))
-  in
-  let flash =
-    let%arr set_notice in
-    fun message ->
+    fun kind message ->
       let%bind.Effect mine =
         Effect.of_thunk (fun () ->
-          incr flash_generation;
-          !flash_generation)
+          incr notice_generation;
+          !notice_generation)
       in
-      let%bind.Effect () = set_notice (Some (message, `Info)) in
+      let%bind.Effect () = set_notice (Some (message, kind)) in
       let%bind.Effect () =
         Effect.of_deferred_thunk (fun () ->
-          Async.Clock_ns.after (Time_ns.Span.of_sec 2.5))
+          Async.Clock_ns.after (Time_ns.Span.of_sec 5.))
       in
-      let%bind.Effect current = Effect.of_thunk (fun () -> !flash_generation) in
+      let%bind.Effect current = Effect.of_thunk (fun () -> !notice_generation) in
       if current = mine then set_notice None else Effect.Ignore
+  in
+  (* Git_data's interface: Some = post an error, None = an op succeeded,
+     drop any stale error right away (and disarm its timer). *)
+  let set_error_notice =
+    let%arr notify and set_notice in
+    function
+    | Some message -> notify `Error message
+    | None ->
+      let%bind.Effect () = Effect.of_thunk (fun () -> incr notice_generation) in
+      set_notice None
   in
   (* The destructive discard is pre-wrapped in the confirm modal — handed
      to Git_data, which owns the per-section op wiring. *)
@@ -280,15 +311,15 @@ let app ~(dimensions : Dimensions.t Bonsai.t) (local_ graph)
      exists (headless/SSH). *)
   let copy_path =
     let write_to_tty = Bonsai_term.Expert.Write_to_tty.write_string_to_tty graph in
-    let%arr write_to_tty and flash in
+    let%arr write_to_tty and notify in
     fun path ->
       let%bind.Effect copied =
         Effect.of_deferred_thunk (fun () -> Clipboard.copy_via_tool path)
       in
       match copied with
-      | Ok () -> flash ("copied " ^ path)
+      | Ok () -> notify `Info ("copied " ^ path)
       | Error (_ : Error.t) ->
-        Effect.Many [ write_to_tty (Clipboard.osc52 path); flash ("copied " ^ path) ]
+        Effect.Many [ write_to_tty (Clipboard.osc52 path); notify `Info ("copied " ^ path) ]
   in
   let data =
     Git_data.create ~discard_confirm ~copy_path ~set_notice:set_error_notice graph
@@ -299,6 +330,16 @@ let app ~(dimensions : Dimensions.t Bonsai.t) (local_ graph)
       ~title:"Commit message"
       ~on_submit:commit
   in
+  let term =
+    Term_pane.Component.create
+      ~dimensions:screen_dimensions
+      ~on_hide:data.refresh
+      ~on_ctrl_c:
+        (let%arr notify in
+         notify `Info "Ctrl-T leaves the terminal — then Ctrl-C quits gitter")
+      graph
+  in
+  let term_controls = Term_pane.Component.controls term in
   let layout_tree = layout_tree ~data ~commit ~copy_path in
   (* The stack and committed panes start hidden — Space w s / w c. *)
   let layout_model, layout_inject =
@@ -313,13 +354,25 @@ let app ~(dimensions : Dimensions.t Bonsai.t) (local_ graph)
   in
   let with_menu =
     Menu.Component.component
-      ~commands:(commands ~layout:controls ~refresh:data.refresh ~commit)
+      ~commands:
+        (commands
+           ~layout:controls
+           ~refresh:data.refresh
+           ~commit
+           ~terminal:
+             (let%arr c = term_controls in
+              c.Term_pane.Component.Controls.toggle))
       screen
   in
-  (* Stack: Modal outermost (nothing may open over it), then the menu and
-     panes. (The embedded terminal component in lib/term_pane is currently
-     unwired — no end-user feature uses it.) *)
-  let with_modal = Modal.Component.component ~model:modal_model ~inject:inject_modal with_menu in
+  (* Stack: Modal outermost (nothing may open over it), then the shell
+     overlay, then Ctrl-C-quit, then the menu and panes. Exit sits BELOW
+     the overlay so a visible terminal captures Ctrl-C for the shell; a
+     side effect is that an open modal also swallows Ctrl-C (Esc first). *)
+  let with_exit = exit_on_ctrlc ~exit with_menu in
+  let with_term = Term_pane.Component.wrap term with_exit in
+  let with_modal =
+    Modal.Component.component ~model:modal_model ~inject:inject_modal with_term
+  in
   let ~view:screen_view, ~handler = with_modal ~dimensions:screen_dimensions graph in
   let view =
     let%arr screen_view

@@ -59,6 +59,8 @@ type t =
   ; branch : Git.Status.Branch.t option Bonsai.t
   ; notice : string option Bonsai.t
       (* the last failed mutation's message; cleared by the next success *)
+  ; stack : Git.Branch_stack.Branch.t list Or_error.t Bonsai.t
+      (* the inferred branch stack; Ok [] until first load / no branches *)
   }
 
 let create (local_ graph) =
@@ -88,15 +90,34 @@ let create (local_ graph) =
     then set_load (Loaded (Or_error.map result ~f:(fun (_raw, entries, branch) -> entries, branch)))
     else Effect.Ignore
   in
+  (* The inferred branch stack: same generation-guard shape as fetch_now,
+     refreshed alongside it (mutations and the poller both go through
+     [refresh]). *)
+  let stack, set_stack = Bonsai.state (Ok []) graph in
+  let stack_generation = ref 0 in
+  let fetch_stack =
+    let%arr set_stack in
+    let%bind.Effect mine =
+      Effect.of_thunk (fun () ->
+        incr stack_generation;
+        !stack_generation)
+    in
+    let%bind.Effect result = Effect.of_deferred_thunk (fun () -> Git.Queries.stack ()) in
+    let%bind.Effect current = Effect.of_thunk (fun () -> !stack_generation) in
+    if current = mine then set_stack result else Effect.Ignore
+  in
   (* Only the FIRST load shows the loading message. *)
   let fetch =
-    let%arr load and set_load and fetch_now in
+    let%arr load and set_load and fetch_now and fetch_stack in
     match load with
-    | Load.Not_loaded -> Effect.Many [ set_load Loading; fetch_now ]
+    | Load.Not_loaded -> Effect.Many [ set_load Loading; fetch_now; fetch_stack ]
     | Loading | Loaded _ -> Effect.Ignore
   in
   Bonsai.Edge.before_display fetch graph;
-  let refresh = fetch_now in
+  let refresh =
+    let%arr fetch_now and fetch_stack in
+    Effect.Many [ fetch_now; fetch_stack ]
+  in
   (* Whichever pane acted last owns the selection. *)
   let active, set_active = Bonsai.state `Unstaged graph in
   let section ~which ~filter =
@@ -121,12 +142,19 @@ let create (local_ graph) =
       let%arr entries and model in
       Panes.Files.Tree.rows ~entries ~collapsed:model.collapsed
     in
-    (* The action transition keeps the MODEL in range per action; this
-       derivation keeps the EXPOSED cursor valid when the data changes (a
-       refresh that shrinks the tree must not blank the pane). *)
+    (* Selection is a key; the repair transition runs whenever the rows'
+       keys change (refresh, stage/unstage, external mutations). *)
+    Bonsai.Edge.on_change
+      ~equal:[%equal: string list]
+      ~callback:
+        (let%arr inject in
+         fun (_ : string list) -> inject Panes.Files.State.Action.Rows_changed)
+      (let%arr rows in
+       List.map rows ~f:Panes.Files.State.row_key)
+      graph;
     let cursor =
       let%arr rows and model in
-      Int.clamp_exn model.cursor ~min:0 ~max:(Int.max 0 (List.length rows - 1))
+      Panes.Files.State.index_of rows model.selection
     in
     let scroll =
       let%arr model in
@@ -136,9 +164,10 @@ let create (local_ graph) =
       let%arr inject and set_active in
       fun (action : Panes.Files.State.Action.t) ->
         match action with
-        (* Wheel scrolling is a viewport motion, not a selection: it must
-           not flip which pane's cursor feeds the diff. *)
-        | Wheel _ -> inject action
+        (* Wheel scrolling and background repairs are viewport/data
+           motions, not selections: they must not flip which pane's
+           cursor feeds the diff. *)
+        | Wheel _ | Rows_changed -> inject action
         | Move _ | Activate _ | Collapse _ | Expand ->
           Effect.Many [ set_active which; inject action ]
     in
@@ -223,7 +252,7 @@ let create (local_ graph) =
      explicit fetches via the generation check. *)
   let peek_selection = Bonsai.peek selection graph in
   let poll =
-    let%arr set_load and bump_revision and peek_selection in
+    let%arr set_load and bump_revision and peek_selection and fetch_stack in
     let%bind.Effect mine = Effect.of_thunk (fun () -> !generation) in
     let%bind.Effect selected = peek_selection in
     let selected_path =
@@ -242,6 +271,10 @@ let create (local_ graph) =
         in
         let%bind status = Git.Queries.status () in
         let%bind index_m = mtime ".git/index" in
+        (* Ref moves on OTHER branches (restacks, new branches) change
+           neither the status output nor the index — the refs listing is
+           what makes the stack pane track them. *)
+        let%bind refs = Git.Queries.refs_signature () in
         let%map selected_m =
           match selected_path with
           | Some path -> mtime path
@@ -252,7 +285,7 @@ let create (local_ graph) =
           | Ok (raw, _, _) -> raw
           | Error e -> "error:" ^ Error.to_string_hum e
         in
-        status, String.concat ~sep:"|" [ raw; index_m; selected_m ])
+        status, String.concat ~sep:"|" [ raw; index_m; selected_m; refs ])
     in
     let status, signature = outcome in
     let%bind.Effect decision =
@@ -276,6 +309,7 @@ let create (local_ graph) =
         [ set_load
             (Loaded (Or_error.map status ~f:(fun (_raw, entries, branch) -> entries, branch)))
         ; bump_revision ()
+        ; fetch_stack
         ]
   in
   Bonsai.Clock.every
@@ -298,5 +332,6 @@ let create (local_ graph) =
   ; commit
   ; branch
   ; notice
+  ; stack
   }
 ;;

@@ -29,6 +29,17 @@ let layout_tree ~(data : Git_data.t) ~discard ~commit ~copy_path =
     | Loaded (Error e) -> `Error e
     | Loaded (Ok _) -> if List.is_empty rows then `Empty empty else `Tree
   in
+  let stack_status =
+    let%arr load = data.load
+    and stack = data.stack in
+    match load with
+    | Git_data.Load.Not_loaded | Loading -> `Loading
+    | Loaded _ ->
+      (match stack with
+       | Error e -> `Error e
+       | Ok [] -> `Empty "no branch stack"
+       | Ok branches -> `Stack branches)
+  in
   let noop = Bonsai.return (fun (_ : string) -> Effect.Ignore) in
   let files_pane ~id ~title ~side ~stage ~unstage ~discard (section : Git_data.section_data) ~empty
     =
@@ -74,6 +85,11 @@ let layout_tree ~(data : Git_data.t) ~discard ~commit ~copy_path =
                   ~discard
                   data.unstaged
                   ~empty:"working tree clean" )
+            ; ( 1.
+              , leaf
+                  ~id:"stack"
+                  ~title:(Bonsai.return "Stack")
+                  (Panes.Stack.Component.component ~status:stack_status) )
             ] )
       ; ( 2.
         , leaf
@@ -96,6 +112,7 @@ let commands ~(layout : Layout.Component.Controls.t Bonsai.t) ~refresh ~commit =
       ; children =
           [ Action { key = 'z'; label = "zoom"; effect = layout.toggle_zoom }
           ; Action { key = 'n'; label = "next pane"; effect = layout.focus_next }
+          ; Action { key = 's'; label = "toggle stack"; effect = layout.toggle_visible "stack" }
           ]
       }
   ; Menu.Commands.Group
@@ -115,6 +132,7 @@ let hints ~focused =
   | "staged" -> "j/k:move  u:unstage  c:commit  y:copy path  Space:menu  Tab:pane"
   | "changes" -> "j/k:move  s:stage  d:discard  c:commit  y:copy path  Tab:pane"
   | "diff" -> "j/k:move  n/p:page  h/l:pan  s/u:\u{00B1}hunk  y:copy path"
+  | "stack" -> "j/k:move  h/l:fold  Space:menu  Tab:pane"
   | _ -> "Space:menu  Tab:focus  Ctrl-C:quit"
 ;;
 
@@ -161,7 +179,13 @@ let app ~(dimensions : Dimensions.t Bonsai.t) (local_ graph)
       | Error (_ : Error.t) -> write_to_tty (Clipboard.osc52 path)
   in
   let layout_tree = layout_tree ~data ~discard ~commit ~copy_path in
-  let layout_model, layout_inject = Layout.Component.state layout_tree graph in
+  (* The stack pane starts hidden — Space w s shows it. *)
+  let layout_model, layout_inject =
+    Layout.Component.state
+      ~initially_hidden:(String.Set.singleton "stack")
+      layout_tree
+      graph
+  in
   let controls = Layout.Component.controls ~inject:layout_inject in
   let screen =
     Layout.Component.component layout_tree ~model:layout_model ~inject:layout_inject

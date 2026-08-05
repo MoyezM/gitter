@@ -26,3 +26,12 @@ val diff_unstaged : string -> Diff.File.t list Or_error.t Deferred.t
 
 (** The staged change: index vs HEAD. *)
 val diff_staged : string -> Diff.File.t list Or_error.t Deferred.t
+
+(** Raw for-each-ref over local heads — the poller's cheap change
+    signature for ref moves ("error:..." on failure, still comparable). *)
+val refs_signature : unit -> string Deferred.t
+
+(** The branch stack derived from git alone (heads + DAG above the common
+    base + recent reflog tips) — see [Branch_stack]. [] when the repo has no
+    branches. *)
+val stack : unit -> Branch_stack.Branch.t list Or_error.t Deferred.t

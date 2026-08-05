@@ -27,11 +27,19 @@ module Tree = struct
   let leaf ~id ~title component = Leaf { id; title; component }
   let split axis children = Split { axis; children }
 
-  (* Desugars to the solver's binary core; see [Solver.Tree.node]. *)
-  let rec to_solver = function
-    | Leaf { id; _ } -> Solver.Tree.Leaf id
+  (* Desugars to the solver's binary core with hidden leaves pruned; a
+     split whose children all pruned disappears, and [Solver.Tree.node]'s
+     single-child collapse removes degenerate splits (and their dividers)
+     for free. See [Solver.Tree.node]. *)
+  let rec to_solver ~hidden = function
+    | Leaf { id; _ } -> if Set.mem hidden id then None else Some (Solver.Tree.Leaf id)
     | Split { axis; children } ->
-      Solver.Tree.node axis (List.map children ~f:(fun (w, c) -> w, to_solver c))
+      (match
+         List.filter_map children ~f:(fun (w, c) ->
+           to_solver ~hidden c |> Option.map ~f:(fun c -> w, c))
+       with
+       | [] -> None
+       | children -> Some (Solver.Tree.node axis children))
   ;;
 
   let rec leaves = function
@@ -40,10 +48,18 @@ module Tree = struct
   ;;
 end
 
-let solve ~solver_tree ~(model : State.Model.t) ~(dimensions : Dimensions.t) =
-  let tree = if model.zoomed then Solver.Tree.Leaf model.focused else solver_tree in
+let solve ~tree ~(model : State.Model.t) ~(dimensions : Dimensions.t) =
+  let solver_tree =
+    if model.zoomed
+    then Solver.Tree.Leaf model.focused
+    else
+      (* [Toggle_visible] never hides the last leaf, so the fallback is
+         unreachable in practice — but stay total. *)
+      Tree.to_solver ~hidden:model.hidden tree
+      |> Option.value ~default:(Solver.Tree.Leaf model.focused)
+  in
   Solver.solve
-    tree
+    solver_tree
     ~fractions:model.fractions
     ~rect:{ x = 0; y = 0; width = dimensions.width; height = dimensions.height }
 ;;
@@ -86,10 +102,14 @@ let instantiate_leaves ~solved leaves (local_ graph) =
    internally, so the caller can derive [Controls] from the same inject and
    hand them to other layers — e.g. Space-menu commands that drive focus and
    zoom. *)
-let state (tree : Tree.t) (local_ graph) =
+let state ?(initially_hidden = String.Set.empty) (tree : Tree.t) (local_ graph) =
   let leaf_ids = List.map (Tree.leaves tree) ~f:(fun (id, _, _) -> id) in
+  let first_leaf =
+    List.find leaf_ids ~f:(fun id -> not (Set.mem initially_hidden id))
+    |> Option.value ~default:(List.hd_exn leaf_ids)
+  in
   Bonsai.state_machine
-    ~default_model:(State.initial ~first_leaf:(List.hd_exn leaf_ids))
+    ~default_model:(State.initial ~hidden:initially_hidden ~first_leaf ())
     ~apply_action:(State.apply_action ~leaf_ids)
     graph
 ;;
@@ -99,6 +119,7 @@ module Controls = struct
   type t =
     { focus_next : unit Effect.t
     ; toggle_zoom : unit Effect.t
+    ; toggle_visible : string -> unit Effect.t
     }
 end
 
@@ -106,16 +127,16 @@ let controls ~inject =
   let%arr inject in
   { Controls.focus_next = inject State.Action.Focus_next
   ; toggle_zoom = inject State.Action.Toggle_zoom
+  ; toggle_visible = (fun id -> inject (State.Action.Toggle_visible id))
   }
 ;;
 
 let component (tree : Tree.t) ~model ~inject : Widget.t =
   fun ~dimensions (local_ graph) ->
-  let solver_tree = Tree.to_solver tree in
   let leaf_list = Tree.leaves tree in
   let solved =
     let%arr dimensions and model in
-    solve ~solver_tree ~model ~dimensions
+    solve ~tree ~model ~dimensions
   in
   let instantiated = instantiate_leaves ~solved leaf_list graph in
   let leaf_views =

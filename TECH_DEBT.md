@@ -48,6 +48,25 @@ app wiring.
   real terminals; Terminal.app ignores OSC 52 silently, so on a bare
   Linux box over Terminal.app-ssh the copy would no-op with no error.
 
+## Stack pane rough edges — 2026-08-05
+
+- Divider fractions are keyed by POSITIONAL path ("0", "0/1"): hiding the
+  stack pane collapses the left column's split tree, so a fraction the
+  user dragged for one boundary gets reapplied to a different one after
+  toggling. Cosmetic (re-draggable). Clean fix: derive split keys from
+  the first leaf id of the split's `first` subtree in Solver so keys
+  survive pruning.
+- The stack inference needs REFLOGS to associate a child with an amended
+  parent (the old tip only survives there). Fresh clones and repos with
+  `core.logAllRefUpdates=false` lose that association — the child shows
+  as a trunk child with no needs-restack flag until the next restack.
+- Slash-prefix grouping is one level deep (first segment only): nested
+  prefixes like team/feature/x group under "team/" without a second
+  level. Fine until someone's naming scheme is deeper.
+- Fold overrides are keyed by branch/group name and never pruned:
+  deleting a branch leaves its stale override entry in the model
+  (harmless, invisible, unbounded only in theory).
+
 ## Build noise — 2026-08-05
 
 - Every link floods `ld: warning: object file ... built for newer macOS

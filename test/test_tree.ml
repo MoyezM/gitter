@@ -94,21 +94,28 @@ let () =
 let activate row = State.Action.Activate { row; height = 10 }
 let collapse = State.Action.Collapse { height = 10 }
 
+let sel key = { State.Model.initial with selection = Some key }
+let selected (m : State.Model.t) = m.selection
+
 let () =
   let m = apply (activate 2) in
-  check "click a dir folds it" (Set.mem m.collapsed "bench" && m.cursor = 2);
+  check "click a dir folds it and selects it"
+    (Set.mem m.collapsed "bench" && [%equal: string option] (selected m) (Some "bench"));
   let m2 = State.apply_action ~entries m (activate 2) in
   check "click again unfolds" (not (Set.mem m2.collapsed "bench"));
-  check "click a file just moves the cursor" (Set.is_empty (apply (activate 1)).collapsed);
-  let m = apply ~model:{ State.Model.initial with cursor = 7 } collapse in
-  check "collapse on a file jumps to its parent dir" (m.cursor = 6 && Set.is_empty m.collapsed);
-  let m = apply ~model:{ State.Model.initial with cursor = 6 } collapse in
-  check "collapse folds the dir under the cursor" (Set.mem m.collapsed "lib/git");
+  check "click a file just selects it"
+    (let m = apply (activate 1) in
+     Set.is_empty m.collapsed && [%equal: string option] (selected m) (Some "REVIEW.md"));
+  let m = apply ~model:(sel "lib/git/queries.ml") collapse in
+  check "collapse on a file jumps to its parent dir"
+    ([%equal: string option] (selected m) (Some "lib/git") && Set.is_empty m.collapsed);
+  let m = apply ~model:(sel "lib/git") collapse in
+  check "collapse folds the dir under the selection" (Set.mem m.collapsed "lib/git");
   let m2 = State.apply_action ~entries m State.Action.Expand in
   check "expand unfolds it" (not (Set.mem m2.collapsed "lib/git"));
   check
     "top-level collapse is a no-op"
-    ((apply ~model:{ State.Model.initial with cursor = 0 } collapse).cursor = 0)
+    ([%equal: string option] (selected (apply ~model:(sel ".DS_Store") collapse)) (Some ".DS_Store"))
 ;;
 
 (* Selection: files select, dirs don't. *)
@@ -148,22 +155,63 @@ let () =
      staged e && not (unstaged e))
 ;;
 
-(* Wheel: scrolls the viewport without touching the cursor; cursor motion
-   reveals the selection again with minimal scroll movement. *)
+(* Wheel: scrolls the viewport without touching the selection; selection
+   motion reveals it again with minimal scroll movement. *)
 let () =
   let m = apply (State.Action.Wheel { dir = 1; height = 3 }) in
   check "wheel scrolls the viewport" (m.scroll = 3);
-  check "wheel leaves the cursor put" (m.cursor = 0);
+  check "wheel leaves the selection put" (Option.is_none (selected m));
   let m2 = State.apply_action ~entries m (State.Action.Wheel { dir = 1; height = 3 }) in
   check "wheel steps accumulate and clamp to the last page" (m2.scroll = 5);
   let m3 = State.apply_action ~entries m2 (State.Action.Move { dir = `Down; height = 3 }) in
-  check "cursor motion reveals the selection" (m3.cursor = 1 && m3.scroll = 1);
-  let visible = State.apply_action ~entries { m with cursor = 4 } (State.Action.Move { dir = `Down; height = 3 }) in
-  check "motion inside the viewport does not scroll" (visible.cursor = 5 && visible.scroll = 3);
+  check "selection motion reveals it"
+    ([%equal: string option] (selected m3) (Some "REVIEW.md") && m3.scroll = 1);
+  let visible =
+    State.apply_action
+      ~entries
+      { m with selection = Some "bench/dune" }
+      (State.Action.Move { dir = `Down; height = 3 })
+  in
+  check "motion inside the viewport does not scroll"
+    ([%equal: string option] (selected visible) (Some "lib") && visible.scroll = 3);
   let clicked = State.apply_action ~entries m (State.Action.Activate { row = 4; height = 3 }) in
-  check "clicking a visible row keeps the viewport" (clicked.cursor = 4 && clicked.scroll = 3);
+  check "clicking a visible row keeps the viewport"
+    ([%equal: string option] (selected clicked) (Some "bench/dune") && clicked.scroll = 3);
   check "offset clamps to the last page" (State.offset ~total:8 ~height:3 99 = 5);
   check "offset floors at zero" (State.offset ~total:8 ~height:3 (-2) = 0)
+;;
+
+(* The repair law: stable under reorder; a vanished key moves to its
+   nearest surviving successor (then predecessor). *)
+let () =
+  let flat names = List.map names ~f:(fun n -> entry n) in
+  let m =
+    State.apply_action
+      ~entries:(flat [ "a"; "b"; "c" ])
+      (sel "b")
+      State.Action.Rows_changed
+  in
+  check "survivor is kept" ([%equal: string option] (selected m) (Some "b"));
+  check "keys are snapshotted" (List.equal String.equal m.keys [ "a"; "b"; "c" ]);
+  let staged =
+    State.apply_action ~entries:(flat [ "a"; "c" ]) m State.Action.Rows_changed
+  in
+  check "vanished key flows to its successor"
+    ([%equal: string option] (selected staged) (Some "c"));
+  let m2 =
+    State.apply_action
+      ~entries:(flat [ "a"; "c" ])
+      staged
+      State.Action.Rows_changed
+  in
+  let last_removed =
+    State.apply_action ~entries:(flat [ "a" ]) m2 State.Action.Rows_changed
+  in
+  check "no successor falls back to the predecessor"
+    ([%equal: string option] (selected last_removed) (Some "a"));
+  check "pure repair is total on unknown keys"
+    (Option.is_none
+       (State.repair ~old_keys:[] ~selection:(Some "ghost") ~new_keys:[ "a" ]))
 ;;
 
 (* Total on empty data. *)
@@ -175,10 +223,11 @@ let () =
     ; Collapse { height = 10 }
     ; Expand
     ; Wheel { dir = 1; height = 10 }
+    ; Rows_changed
     ]
     ~f:(fun action ->
       let m = State.apply_action ~entries:[] State.Model.initial action in
-      check "empty entries are total" (m.cursor = 0))
+      check "empty entries are total" (Option.is_none m.selection))
 ;;
 
 let () = print_endline "All tree tests passed."

@@ -30,6 +30,10 @@
           packages = with pkgs; [
             # OCaml bootstrap: the tool only — the switch lives in ~/.opam
             opam
+            # ocamlopt's configured assembler is literally "gcc"; inside the
+            # shell /usr/bin/gcc is an xcrun shim that fails against the nix
+            # SDK, so alias gcc to the shell's clang wrapper
+            (pkgs.writeShellScriptBin "gcc" ''exec ${pkgs.stdenv.cc}/bin/cc "$@"'')
             # native deps of the opam packages (zarith needs gmp; the
             # tree-sitter opam package's build wants autoconf)
             pkg-config

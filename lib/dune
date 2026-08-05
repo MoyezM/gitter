@@ -7,6 +7,16 @@
    patdiff.ansi_text tree-sitter tree-sitter.json tree-sitter.ocaml)
  (foreign_stubs
   (language c)
-  (names pty_stubs))
+  (names pty_stubs vterm_stubs)
+  (flags
+   (:standard
+    (:include vterm_c_flags.sexp))))
+ (c_library_flags
+  (:include vterm_c_library_flags.sexp))
  (preprocess
   (pps ppx_jane bonsai.ppx_bonsai)))
+
+(rule
+ (targets vterm_c_flags.sexp vterm_c_library_flags.sexp)
+ (action
+  (run %{exe:../config/discover.exe})))

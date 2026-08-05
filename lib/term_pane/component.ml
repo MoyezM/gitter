@@ -4,7 +4,7 @@ open Bonsai.Let_syntax
 
 (* The embedded terminal: a fullscreen overlay hosting [$EDITOR <file>],
    toggleable to the background (Ctrl-T) while the process keeps running.
-   Backed by [Pty_client] + [Vt]: a real pty feeding a real emulator —
+   Backed by [Terminal.Session]: a real pty feeding libvterm —
    keystrokes are synchronous fd writes, screens are tear-free grid
    generations, and the mouse passes through SGR-encoded. While an editor
    is live, opening another file just foregrounds the existing session: we
@@ -30,7 +30,7 @@ type t =
   ; set : (Model.t -> unit Effect.t) Bonsai.t
   ; generation : int Bonsai.t (* Vt screen generation + lifecycle events *)
   ; generation_var : int Bonsai.Expert.Var.t
-  ; client : Pty_client.t option ref
+  ; client : Terminal.Session.t option ref
   ; dimensions : Dimensions.t Bonsai.t
   ; cwd : string
   }
@@ -55,7 +55,7 @@ let create ~(dimensions : Dimensions.t Bonsai.t) (local_ graph) =
   let resize_callback =
     Bonsai.return (fun (rows, cols) ->
       Effect.of_thunk (fun () ->
-        Option.iter !client ~f:(fun c -> Pty_client.resize c ~rows ~cols)))
+        Option.iter !client ~f:(fun c -> Terminal.Session.resize c ~rows ~cols)))
   in
   Bonsai.Edge.on_change ~equal:[%equal: int * int] ~callback:resize_callback size graph;
   { model
@@ -78,23 +78,25 @@ end
 let controls t =
   let%arr model = t.model
   and set = t.set
-  and (_ : int) = t.generation
+  and generation = t.generation
   and dimensions = t.dimensions in
+  ignore (generation : int);
   let running =
     match !(t.client) with
-    | Some c -> not (Pty_client.is_closed c)
+    | Some c -> not (Terminal.Session.is_closed c)
     | None -> false
   in
   let bump () =
-    Bonsai.Expert.Var.update t.generation_var ~f:(fun g -> g + 1)
+    Bonsai.Expert.Var.update t.generation_var ~f:(fun g -> g + 1);
+    Wake.wake ()
   in
   let spawn command =
     Effect.of_thunk (fun () ->
-      Option.iter !(t.client) ~f:Pty_client.close;
+      Option.iter !(t.client) ~f:Terminal.Session.close;
       let rows, cols = inner dimensions in
       t.client
       := Some
-           (Pty_client.create
+           (Terminal.Session.create
               ~command
               ~cwd:t.cwd
               ~rows
@@ -125,19 +127,24 @@ let wrap t (base : Widget.t) : Widget.t =
   let view =
     let%arr base_view
     and model = t.model
-    and (_ : int) = t.generation
+    (* named and consumed: an ignored pattern here gets PRUNED from the
+       dependency set by ppx_bonsai, and screen updates published by the
+       pty reader stop repainting (they only show up on the next
+       unrelated event). Same in [controls]. *)
+    and generation = t.generation
     and dimensions in
+    ignore (generation : int);
     if not model.Model.visible
     then base_view
     else (
       let closed =
         match !(t.client) with
-        | Some c -> Pty_client.is_closed c
+        | Some c -> Terminal.Session.is_closed c
         | None -> true
       in
       let inner_view =
         match !(t.client) with
-        | Some c -> Vt.render (Pty_client.vt c)
+        | Some c -> Terminal.Session.render c
         | None -> View.text ~attrs:Theme.context " starting editor..."
       in
       let title =
@@ -156,11 +163,12 @@ let wrap t (base : Widget.t) : Widget.t =
         ~b:(Int.max 0 (View.height boxed - dimensions.height))
         boxed)
   in
+  (* No generation dependency here: the closure reads [t.client] at
+     event time, so it never goes stale. *)
   let handler =
     let%arr base_handler
     and model = t.model
     and set = t.set
-    and (_ : int) = t.generation
     and dimensions in
     fun (event : Event.t) ->
       match model.Model.visible, event with
@@ -174,7 +182,7 @@ let wrap t (base : Widget.t) : Widget.t =
       | false, event -> base_handler event
       | true, event ->
         (match !(t.client) with
-         | Some c when not (Pty_client.is_closed c) ->
+         | Some c when not (Terminal.Session.is_closed c) ->
            (* synchronous fd write — no deferred hop on the key path *)
            Effect.of_thunk (fun () ->
              match event with
@@ -186,10 +194,10 @@ let wrap t (base : Widget.t) : Widget.t =
                let rows, cols = inner dimensions in
                if x >= 0 && y >= 0 && x < cols && y < rows
                then
-                 Pty_client.send_event
+                 Terminal.Session.send_event
                    c
                    (Event.Mouse { kind; position = { Position.x; y }; mods })
-             | event -> Pty_client.send_event c event)
+             | event -> Terminal.Session.send_event c event)
          | Some _ | None ->
            (match event with
             | Key_press _ -> set { model with Model.visible = false }

@@ -6,8 +6,9 @@
 
     Behavioral contract (helix-feel): the cursor rests only on diff rows;
     motions keep it 5 rows from the viewport edges (margin shrinks on tiny
-    panes so it always stays visible); a wheel tick moves the VIEW by 3 rows
-    and drags the cursor along only when it would leave the viewport. *)
+    panes so it always stays visible); a wheel tick moves the VIEW by 3
+    rows and never moves the cursor — the selection may sit off-screen,
+    and the next motion reveals it again. *)
 
 module Model : sig
   type t =
@@ -38,12 +39,11 @@ end
     [effective_cursor]. *)
 val apply_action : Document.t -> Model.t -> Action.t -> height:int -> Model.t
 
-(** The cursor row to DISPLAY and to start motions from: the model cursor
-    when it rests on a diff row that is inside the viewport, else the first
-    diff row visible in the viewport. The single owner of the "cursor sits
-    on a visible diff line" invariant — render and apply_action must both
-    use it, so what you see is always what [j] moves from. *)
-val effective_cursor : Document.t -> Model.t -> height:int -> int
+(** The cursor row to display, to start motions from, and to stage hunks
+    at: the model cursor normalized onto a diff row (fresh loads leave it
+    on a header). Independent of the viewport — after wheel scrolling it
+    may be off-screen, and render simply shows no cursor row. *)
+val effective_cursor : Document.t -> Model.t -> int
 
 (** Scroll clamped for the current document and pane height; render clamps
     with exactly this before slicing. *)

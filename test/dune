@@ -1,5 +1,6 @@
 (tests
- (names test_solver test_git test_highlight test_cursor test_tree test_scrollbar test_vt)
- (libraries core gitter grammar_registry tree-sitter)
+ (names test_solver test_git test_highlight test_cursor test_tree test_scrollbar
+   test_terminal test_session test_clipboard)
+ (libraries async core gitter grammar_registry tree-sitter bonsai_term)
  (preprocess
   (pps ppx_jane)))

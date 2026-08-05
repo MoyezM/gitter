@@ -1,9 +1,8 @@
 open! Core
 open! Bonsai_term
 
-(** The embedded editor terminal: a fullscreen overlay running
-    [$EDITOR <file>] in a tmux control-mode session ([Control_client] — no
-    subprocess per keystroke or frame), toggleable to the background
+(** The embedded editor: a fullscreen overlay hosting [$EDITOR <file>] in a
+    [Terminal.Session] (real pty + libvterm), toggleable to the background
     (Ctrl-T both ways) while the process keeps running. Spawned in the
     working directory gitter was launched from. While an editor is live,
     opening another file only foregrounds the existing session — keys are

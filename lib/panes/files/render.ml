@@ -18,10 +18,6 @@ type status =
   | `Tree
   ]
 
-(* One owner for the viewport mapping: render and the click handler must
-   agree on it or clicks activate the wrong row. *)
-let offset ~cursor ~height = Int.max 0 (cursor - height + 1)
-
 (* Each pane shows only ITS side's letter — the staged pane the index
    letter, Changes the worktree letter (real chars as parsed: an add/add
    conflict reads its true code, not a flattened one). *)
@@ -71,14 +67,14 @@ let row ~width ~selected ~side (r : Tree.row) =
       ]
 ;;
 
-let render ~(status : status) ~rows ~cursor ~side ~(dimensions : Dimensions.t) =
+let render ~(status : status) ~rows ~cursor ~scroll ~side ~(dimensions : Dimensions.t) =
   match status with
   | `Loading -> seg Theme.context " loading git status..."
   | `Error e -> seg Theme.untracked (" git error: " ^ Error.to_string_hum e)
   | `Empty message -> seg Theme.context (" " ^ message)
   | `Tree ->
     let height = dimensions.height in
-    let offset = offset ~cursor ~height in
+    let offset = State.offset ~total:(List.length rows) ~cursor ~height scroll in
     let bar = Scrollbar.view ~total:(List.length rows) ~visible:height ~offset in
     let row_width = dimensions.width - if Option.is_some bar then 1 else 0 in
     let body =

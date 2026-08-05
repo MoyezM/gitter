@@ -145,10 +145,31 @@ let () =
      staged e && not (unstaged e))
 ;;
 
+(* Wheel: scrolls the viewport without touching the cursor; any cursor
+   action clears the override, snapping the view back to the selection. *)
+let () =
+  let m = apply (State.Action.Wheel { dir = 1; height = 3 }) in
+  check "wheel sets a scroll override" ([%equal: int option] m.scroll (Some 3));
+  check "wheel leaves the cursor put" (m.cursor = 0);
+  let m2 = State.apply_action ~entries m (State.Action.Wheel { dir = 1; height = 3 }) in
+  check "wheel steps accumulate and clamp" ([%equal: int option] m2.scroll (Some 5));
+  let m3 = State.apply_action ~entries m2 (State.Action.Move `Down) in
+  check "cursor motion clears the override" (Option.is_none m3.scroll && m3.cursor = 1);
+  check "offset follows cursor without override" (State.offset ~total:8 ~cursor:5 ~height:3 None = 3);
+  check "offset uses the override when set" (State.offset ~total:8 ~cursor:0 ~height:3 (Some 4) = 4);
+  check "override clamps to the last page" (State.offset ~total:8 ~cursor:0 ~height:3 (Some 99) = 5)
+;;
+
 (* Total on empty data. *)
 let () =
   List.iter
-    [ State.Action.Move `Up; Move `Down; Activate 0; Collapse; Expand ]
+    [ State.Action.Move `Up
+    ; Move `Down
+    ; Activate 0
+    ; Collapse
+    ; Expand
+    ; Wheel { dir = 1; height = 10 }
+    ]
     ~f:(fun action ->
       let m = State.apply_action ~entries:[] State.Model.initial action in
       check "empty entries are total" (m.cursor = 0))

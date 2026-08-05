@@ -13,7 +13,7 @@ open Bonsai.Let_syntax
    Layout's state is created here so its control handle can feed the menu's
    command tree — the pattern every layer with commands will follow. *)
 
-let layout_tree ~(data : Git_data.t) ~discard ~commit ~edit =
+let layout_tree ~(data : Git_data.t) ~discard ~commit ~copy_path =
   let diff_title =
     let%arr selection = data.selection in
     match selection with
@@ -39,12 +39,13 @@ let layout_tree ~(data : Git_data.t) ~discard ~commit ~edit =
          ~status:(files_status section.rows ~empty)
          ~rows:section.rows
          ~cursor:section.cursor
+         ~scroll:section.scroll
          ~side
          ~stage
          ~unstage
          ~discard
          ~commit
-         ~edit
+         ~copy_path
          ~inject:section.inject)
   in
   Layout.Component.Tree.(
@@ -83,7 +84,7 @@ let layout_tree ~(data : Git_data.t) ~discard ~commit ~edit =
                ~revision:data.revision
                ~stage_hunk:data.stage_hunk
                ~unstage_hunk:data.unstage_hunk
-               ~edit) )
+               ~copy_path) )
       ])
 ;;
 
@@ -111,9 +112,9 @@ let commands ~(layout : Layout.Component.Controls.t Bonsai.t) ~refresh ~commit =
 (* Context hints for the status bar: the focused pane's keys. *)
 let hints ~focused =
   match focused with
-  | "staged" -> "j/k:move  u:unstage  c:commit  e:edit  C-t:term  Space:menu  Tab:pane"
-  | "changes" -> "j/k:move  s:stage  d:discard  c:commit  e:edit  C-t:term  Tab:pane"
-  | "diff" -> "j/k:move  n/p:page  h/l:pan  s/u:\u{00B1}hunk  e:edit  C-t:term"
+  | "staged" -> "j/k:move  u:unstage  c:commit  y:copy path  Space:menu  Tab:pane"
+  | "changes" -> "j/k:move  s:stage  d:discard  c:commit  y:copy path  Tab:pane"
+  | "diff" -> "j/k:move  n/p:page  h/l:pan  s/u:\u{00B1}hunk  y:copy path"
   | _ -> "Space:menu  Tab:focus  Ctrl-C:quit"
 ;;
 
@@ -145,13 +146,21 @@ let app ~(dimensions : Dimensions.t Bonsai.t) (local_ graph)
       ~title:"Commit message"
       ~on_submit:commit
   in
-  let term = Term_pane.Component.create ~dimensions:screen_dimensions graph in
-  let term_controls = Term_pane.Component.controls term in
-  let edit =
-    let%arr term_controls in
-    term_controls.Term_pane.Component.Controls.open_file
+  (* Copy the selected path (repo-root-relative, as git reports it):
+     native tool first, OSC 52 escape to the hosting terminal when none
+     exists (headless/SSH). *)
+  let copy_path =
+    let write_to_tty = Bonsai_term.Expert.Write_to_tty.write_string_to_tty graph in
+    let%arr write_to_tty in
+    fun path ->
+      let%bind.Effect copied =
+        Effect.of_deferred_thunk (fun () -> Clipboard.copy_via_tool path)
+      in
+      match copied with
+      | Ok () -> Effect.Ignore
+      | Error (_ : Error.t) -> write_to_tty (Clipboard.osc52 path)
   in
-  let layout_tree = layout_tree ~data ~discard ~commit ~edit in
+  let layout_tree = layout_tree ~data ~discard ~commit ~copy_path in
   let layout_model, layout_inject = Layout.Component.state layout_tree graph in
   let controls = Layout.Component.controls ~inject:layout_inject in
   let screen =
@@ -162,10 +171,10 @@ let app ~(dimensions : Dimensions.t Bonsai.t) (local_ graph)
       ~commands:(commands ~layout:controls ~refresh:data.refresh ~commit)
       screen
   in
-  (* Stack: Modal outermost (nothing may open over it), then the editor
-     terminal (fullscreen when foregrounded), then the menu and panes. *)
-  let with_term = Term_pane.Component.wrap term with_menu in
-  let with_modal = Modal.Component.component ~model:modal_model ~inject:inject_modal with_term in
+  (* Stack: Modal outermost (nothing may open over it), then the menu and
+     panes. (The embedded terminal component in lib/term_pane is currently
+     unwired — no end-user feature uses it.) *)
+  let with_modal = Modal.Component.component ~model:modal_model ~inject:inject_modal with_menu in
   let ~view:screen_view, ~handler = with_modal ~dimensions:screen_dimensions graph in
   let view =
     let%arr screen_view

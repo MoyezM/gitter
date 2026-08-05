@@ -10,7 +10,7 @@ let component
       ~(revision : int Bonsai.t)
       ~stage_hunk
       ~unstage_hunk
-      ~edit
+      ~copy_path
   : Widget.t
   =
   fun ~dimensions (local_ graph) ->
@@ -85,17 +85,19 @@ let component
     and selection
     and stage_hunk
     and unstage_hunk
-    and edit in
-    let doc, height = doc_input in
-    (* s/u apply the hunk enclosing the (visible) cursor to the index; the
-       raw hunk bytes come from the payload's parsed files. Failure (index
-       moved underneath) resyncs via the mutation's refresh — silent. *)
+    and copy_path in
+    let doc, (_ : int) = doc_input in
+    (* s/u apply the hunk enclosing the cursor to the index (the cursor may
+       be off-screen after wheel scrolling — the selection stays
+       authoritative); the raw hunk bytes come from the payload's parsed
+       files. Failure (index moved underneath) resyncs via the mutation's
+       refresh — silent. *)
     let hunk_op ~wanted_side op =
       match selection, result with
       | Some ((path, side) as key), Some (rkey, Ok (payload : Fetch.payload))
         when [%equal: string * [ `Staged | `Unstaged ]] key rkey
              && [%equal: [ `Staged | `Unstaged ]] side wanted_side ->
-        let cursor = State.effective_cursor doc model ~height in
+        let cursor = State.effective_cursor doc model in
         (match Document.hunk_at doc ~row:cursor with
          | None -> Effect.Ignore
          | Some (fi, hi) ->
@@ -115,9 +117,9 @@ let component
           hunk_op ~wanted_side:`Unstaged stage_hunk
         | Key_press { key = ASCII 'u'; mods = [] } ->
           hunk_op ~wanted_side:`Staged unstage_hunk
-        | Key_press { key = ASCII 'e'; mods = [] } ->
+        | Key_press { key = ASCII 'y'; mods = [] } ->
           (match selection with
-           | Some (path, _) -> edit path
+           | Some (path, _) -> copy_path path
            | None -> Effect.Ignore)
         | Event.Key_press { key = ASCII 'j'; mods = [] }
         | Key_press { key = Arrow `Down; mods = [] } -> inject (State.Action.Move 1)

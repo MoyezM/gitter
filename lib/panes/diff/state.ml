@@ -66,25 +66,10 @@ let snap (doc : Document.t) ~dir i =
     Option.value nearest ~default:i)
 ;;
 
-let effective_cursor (doc : Document.t) (model : Model.t) ~height =
-  if Array.length doc = 0
-  then 0
-  else (
-    let cursor = clamp_row doc model.cursor in
-    let scroll = clamp_scroll doc ~height model.scroll in
-    let stop = Int.min (Array.length doc) (scroll + height) in
-    if cursor >= scroll && cursor < stop && Document.is_diff_line doc.(cursor)
-    then cursor
-    else (
-      (* The model cursor is on a header (fresh load) or outside the
-         viewport (resize leftovers, click-snap past the edge): show the
-         cursor on — and move it from — the first diff row the user can
-         actually see. *)
-      let rec go j =
-        if j >= stop then cursor else if Document.is_diff_line doc.(j) then j else go (j + 1)
-      in
-      go scroll))
-;;
+(* The cursor normalized onto a diff row (fresh loads leave it on a
+   header). Deliberately independent of the viewport: wheel scrolling may
+   leave the cursor off-screen, and motions/staging still act on it. *)
+let effective_cursor (doc : Document.t) (model : Model.t) = snap doc ~dir:1 model.cursor
 
 (* Scroll so the cursor sits within the margin of neither edge. The margin
    shrinks below [scrolloff] on tiny panes — at full scrolloff a pane under
@@ -97,18 +82,15 @@ let follow (doc : Document.t) ~height ~cursor scroll =
 ;;
 
 let move doc (model : Model.t) ~height ~by =
-  let cursor = snap doc ~dir:(Int.compare by 0) (effective_cursor doc model ~height + by) in
+  let cursor = snap doc ~dir:(Int.compare by 0) (effective_cursor doc model + by) in
   let scroll = follow doc ~height ~cursor model.scroll in
   { model with Model.cursor; scroll }
 ;;
 
-(* Wheel scrolls the VIEW; the cursor is then clamped to stay visible. *)
+(* Wheel scrolls the VIEW only — the cursor stays put, off-screen if need
+   be; the next motion reveals it again via [follow]. *)
 let wheel doc (model : Model.t) ~height ~dir =
-  let scroll = clamp_scroll doc ~height (model.scroll + (wheel_step * dir)) in
-  let cursor =
-    model.cursor |> Int.max scroll |> Int.min (scroll + height - 1) |> snap doc ~dir
-  in
-  { model with Model.cursor; scroll }
+  { model with Model.scroll = clamp_scroll doc ~height (model.scroll + (wheel_step * dir)) }
 ;;
 
 (* The pan limit: just past the longest line VISIBLE right now — panning

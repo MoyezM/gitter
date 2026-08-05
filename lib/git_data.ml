@@ -28,10 +28,12 @@ let entries_of_load (load : Load.t) =
   | Not_loaded | Loading | Loaded (Error _) -> []
 ;;
 
-(* One section pane's slice: its visible rows, cursor, and inject. *)
+(* One section pane's slice: its visible rows, cursor, scroll override,
+   and inject. *)
 type section_data =
   { rows : Panes.Files.Tree.row list Bonsai.t
   ; cursor : int Bonsai.t
+  ; scroll : int option Bonsai.t
   ; inject : (Panes.Files.State.Action.t -> unit Effect.t) Bonsai.t
   }
 
@@ -126,16 +128,26 @@ let create (local_ graph) =
       let%arr rows and model in
       Int.clamp_exn model.cursor ~min:0 ~max:(Int.max 0 (List.length rows - 1))
     in
+    let scroll =
+      let%arr model in
+      model.Panes.Files.State.Model.scroll
+    in
     let inject =
       let%arr inject and set_active in
-      fun action -> Effect.Many [ set_active which; inject action ]
+      fun (action : Panes.Files.State.Action.t) ->
+        match action with
+        (* Wheel scrolling is a viewport motion, not a selection: it must
+           not flip which pane's cursor feeds the diff. *)
+        | Wheel _ -> inject action
+        | Move _ | Activate _ | Collapse | Expand ->
+          Effect.Many [ set_active which; inject action ]
     in
     let selection =
       let%arr rows and cursor in
       Panes.Files.State.selection rows ~cursor
       |> Option.map ~f:(fun path -> path, which)
     in
-    { rows; cursor; inject }, selection
+    { rows; cursor; scroll; inject }, selection
   in
   let staged, staged_selection = section ~which:`Staged ~filter:Panes.Files.Sections.is_staged in
   let unstaged, unstaged_selection =

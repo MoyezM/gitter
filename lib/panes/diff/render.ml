@@ -212,7 +212,7 @@ let render ~(content : content) ~(model : State.Model.t) ~(dimensions : Dimensio
   | `Document (doc, old_hl, new_hl) ->
     let height = dimensions.height in
     let scroll = State.clamp_scroll doc ~height model.scroll in
-    let cursor = State.effective_cursor doc model ~height in
+    let cursor = State.effective_cursor doc model in
     let visible =
       Array.sub doc ~pos:scroll ~len:(Int.min height (Array.length doc - scroll))
     in

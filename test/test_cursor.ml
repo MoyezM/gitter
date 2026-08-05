@@ -24,8 +24,8 @@ let at cursor = { Model.cursor; scroll = 0; pan = 0 }
    row, and motions start from what is shown. *)
 let () =
   check
-    "fresh cursor ghosts to first diff row"
-    (State.effective_cursor doc Model.initial ~height:20 = 1);
+    "fresh cursor normalizes to first diff row"
+    (State.effective_cursor doc Model.initial = 1);
   check "j from fresh moves from the ghost" ((apply doc Model.initial (A.Move 1)).cursor = 2);
   check "k from fresh clamps to first diff row" ((apply doc Model.initial (A.Move (-1))).cursor = 1)
 ;;
@@ -62,14 +62,15 @@ let () =
 ;;
 
 (* Wheel: flat 3-row steps of the VIEW (velocity comes from the terminal's
-   event rate); the cursor is dragged along only at the viewport edge. *)
+   event rate); the cursor never moves — off-screen if need be. *)
 let () =
   let m0 = { Model.cursor = 0; scroll = 0; pan = 0 } in
   let m1 = apply ~height:5 many m0 (A.Wheel 1) in
   check "wheel scrolls the view 3 rows" (m1.scroll = 3);
-  check "wheel keeps cursor in view" (m1.cursor >= m1.scroll && m1.cursor < m1.scroll + 5);
+  check "wheel leaves the cursor put" (m1.cursor = 0);
   let m2 = apply ~height:5 many m1 (A.Wheel 1) in
   check "steps stay flat" (m2.scroll - m1.scroll = 3);
+  check "cursor stays put once off-screen" (m2.cursor = 0);
   let m3 = apply ~height:5 many m2 (A.Wheel (-1)) in
   check "wheel up steps back" (m3.scroll = m2.scroll - 3);
   check "wheel clamps at top" ((apply ~height:5 many m0 (A.Wheel (-1))).scroll = 0)
@@ -86,14 +87,15 @@ let () =
       check "empty doc action is total" (m.cursor = 0 && m.scroll = 0))
 ;;
 
-(* An off-viewport cursor ghosts to the first visible diff row — what you
-   see is what [j] moves from. *)
+(* An off-viewport cursor stays authoritative: motions start from it and
+   the view follows back to reveal it. *)
 let () =
   check
-    "off-screen cursor ghosts into the viewport"
-    (State.effective_cursor many { Model.cursor = 90; scroll = 0; pan = 0 } ~height:5 = 0);
+    "off-screen cursor is not relocated"
+    (State.effective_cursor many { Model.cursor = 90; scroll = 0; pan = 0 } = 90);
   let m = apply ~height:5 many { Model.cursor = 90; scroll = 0; pan = 0 } (A.Move 1) in
-  check "move starts from the visible ghost" (m.cursor = 1)
+  check "move starts from the real cursor" (m.cursor = 91);
+  check "move reveals the cursor" (m.scroll <= m.cursor && m.cursor < m.scroll + 5)
 ;;
 
 (* Reset, and the resize re-anchor: Click must hit the row render displayed

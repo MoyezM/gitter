@@ -22,12 +22,18 @@ let layout_tree ~(data : Git_data.t) =
     split
       `Row
       [ ( 1.
-        , leaf ~id:"files" ~title:(Bonsai.return "Files") (Leaves.Files.component ~data) )
+        , leaf
+            ~id:"files"
+            ~title:(Bonsai.return "Files")
+            (Panes.Files.component
+               ~load:data.load
+               ~cursor:data.cursor
+               ~inject:data.files_inject) )
       ; ( 2.
         , leaf
             ~id:"diff"
             ~title:diff_title
-            (Leaves.Diff.component ~selection:data.selection) )
+            (Panes.Diff.Component.component ~selection:data.selection) )
       ])
 ;;
 

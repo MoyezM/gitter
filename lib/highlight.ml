@@ -31,24 +31,7 @@ type session =
 type t = session option
 
 let empty : t = None
-
-(* Built-ins ship inside the tree-sitter opam package; everything else comes
-   from the generated registry (see scripts/add-grammar — adding a language
-   never touches this file). A spec is (language, highlight query source). *)
-let builtin ext : ((unit -> Tree_sitter.Language.t) * string) option =
-  match ext with
-  | "ml" -> Some (Tree_sitter_ocaml.ocaml, Tree_sitter_ocaml.ocaml_highlights_query)
-  | "mli" ->
-    Some (Tree_sitter_ocaml.interface, Tree_sitter_ocaml.interface_highlights_query)
-  | "json" -> Some (Tree_sitter_json.language, Tree_sitter_json.highlights_query)
-  | _ -> None
-;;
-
-let spec_for_ext ext =
-  match builtin ext with
-  | Some s -> Some s
-  | None -> Grammar_registry.find ext
-;;
+let is_empty = Option.is_none
 
 let line_starts content =
   String.foldi content ~init:[ 0 ] ~f:(fun i acc c ->
@@ -67,11 +50,11 @@ let query_cache : (string, Tree_sitter.Query.t) Hashtbl.t = Hashtbl.create (modu
 let session_spec ~path =
   let open Option.Let_syntax in
   let%bind ext = snd (Filename.split_extension path) in
-  let%bind language, source = spec_for_ext ext in
+  let%bind { Grammar_registry.language; highlights_query } = Grammar.find ext in
   Option.try_with (fun () ->
     ( language ()
     , Hashtbl.find_or_add query_cache ext ~default:(fun () ->
-        Tree_sitter.Query.create (language ()) ~source) ))
+        Tree_sitter.Query.create (language ()) ~source:highlights_query) ))
 ;;
 
 let build ~language ~query content =
@@ -111,18 +94,33 @@ let line_of ~starts byte =
   | None -> 0
 ;;
 
+(* A window owns its origin: callers index by ABSOLUTE 1-based line number
+   and cannot desync from the range the window was built over. *)
+module Window = struct
+  type t =
+    { from_line : int
+    ; spans : Span.t list array
+    }
+
+  let empty = { from_line = 1; spans = [||] }
+
+  let line t line =
+    let i = line - t.from_line in
+    if i >= 0 && i < Array.length t.spans then t.spans.(i) else []
+  ;;
+end
+
 (* Spans for lines [from_line .. to_line] (1-based, inclusive): ONE ranged
-   query over just those bytes, sliced per line. Index the result with
-   [line_in_window]. *)
-let window (t : t) ~from_line ~to_line : Span.t list array =
+   query over just those bytes, distributed per line. *)
+let window (t : t) ~from_line ~to_line : Window.t =
   match t with
-  | None -> [||]
+  | None -> Window.empty
   | Some s ->
     let n_lines = Array.length s.starts in
     let from_line = Int.max 1 from_line in
     let to_line = Int.min n_lines to_line in
     if from_line > to_line
-    then [||]
+    then Window.empty
     else (
       let start_byte = s.starts.(from_line - 1) in
       let end_byte = line_end s (to_line - 1) in
@@ -149,11 +147,9 @@ let window (t : t) ~from_line ~to_line : Span.t list array =
             out.(line - from_line)
             <- { Span.start_col; end_col; capture } :: out.(line - from_line)
         done);
-      Array.map out ~f:(fun spans ->
-        List.sort spans ~compare:(fun a b -> Int.compare a.Span.start_col b.Span.start_col)))
-;;
-
-let line_in_window window ~from_line line =
-  let idx = line - from_line in
-  if idx >= 0 && idx < Array.length window then window.(idx) else []
+      let spans =
+        Array.map out ~f:(fun spans ->
+          List.sort spans ~compare:(fun a b -> Int.compare a.Span.start_col b.Span.start_col))
+      in
+      { Window.from_line; spans })
 ;;

@@ -38,13 +38,17 @@ let row ~width ~selected (entry : Git.Status.Entry.t) =
   View.hcat (marker :: (status_code ~with_sel entry @ [ seg (with_sel []) " "; name ]))
 ;;
 
+(* One owner for the viewport mapping: render and the click handler must
+   agree on it or clicks select the wrong entry. *)
+let offset ~cursor ~height = Int.max 0 (cursor - height + 1)
+
 let render ~(load : Git_data.Load.t) ~cursor ~(dimensions : Dimensions.t) =
   match load with
   | Not_loaded | Loading -> seg Theme.context " loading git status..."
   | Loaded (Error e) -> seg Theme.untracked (" git error: " ^ Error.to_string_hum e)
   | Loaded (Ok []) -> seg Theme.context " working tree clean"
   | Loaded (Ok entries) ->
-    let offset = Int.max 0 (cursor - dimensions.height + 1) in
+    let offset = offset ~cursor ~height:dimensions.height in
     let rows =
       List.take (List.drop entries offset) dimensions.height
       |> List.mapi ~f:(fun i entry ->
@@ -53,28 +57,24 @@ let render ~(load : Git_data.Load.t) ~cursor ~(dimensions : Dimensions.t) =
     View.vcat rows
 ;;
 
-let component ~(data : Git_data.t) : Widget.t =
+let component ~load ~cursor ~inject : Widget.t =
   fun ~dimensions (local_ _graph) ->
   let view =
-    let%arr load = data.load
-    and cursor = data.cursor
-    and dimensions in
+    let%arr load and cursor and dimensions in
     render ~load ~cursor ~dimensions
   in
   let handler =
-    let%arr inject = data.files_inject
-    and cursor = data.cursor
-    and dimensions in
+    let%arr inject and cursor and dimensions in
     fun (event : Event.t) ->
-      let offset = Int.max 0 (cursor - dimensions.height + 1) in
+      let offset = offset ~cursor ~height:dimensions.height in
       match event with
       | Event.Key_press { key = ASCII 'j'; mods = [] }
-      | Key_press { key = Arrow `Down; mods = [] } -> inject (Move `Down)
+      | Key_press { key = Arrow `Down; mods = [] } -> inject (Git_data.Files_action.Move `Down)
       | Key_press { key = ASCII 'k'; mods = [] }
-      | Key_press { key = Arrow `Up; mods = [] } -> inject (Move `Up)
+      | Key_press { key = Arrow `Up; mods = [] } -> inject (Git_data.Files_action.Move `Up)
       | Mouse { kind = Scroll `Down; _ } -> inject (Move `Down)
       | Mouse { kind = Scroll `Up; _ } -> inject (Move `Up)
-      | Mouse { kind = Left; position; _ } -> inject (Set (position.y + offset))
+      | Mouse { kind = Left; position; _ } -> inject (Git_data.Files_action.Set (position.y + offset))
       | _ -> Effect.Ignore
   in
   ~view, ~handler

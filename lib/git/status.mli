@@ -1,0 +1,26 @@
+(** Parser for [git status --porcelain=v2] — the machine-readable format
+    with a stability guarantee. Pure string -> types. *)
+
+module Entry : sig
+  module Kind : sig
+    type t =
+      | Changed
+      | Renamed of { from : string }
+      | Untracked
+      | Unmerged
+    [@@deriving equal]
+  end
+
+  type t =
+    { index : char (** raw X status letter; '.' means unmodified *)
+    ; worktree : char (** raw Y status letter; '.' means unmodified *)
+    ; path : string (** unquoted — real bytes, ready to hand back to git *)
+    ; kind : Kind.t
+    }
+end
+
+(** Decode a git C-quoted path (core.quotePath); non-quoted input passes
+    through unchanged. Total — malformed escapes degrade, never raise. *)
+val unquote : string -> string
+
+val parse : string -> Entry.t list

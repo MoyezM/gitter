@@ -6,9 +6,7 @@ let check name cond = if not cond then failwithf "FAILED: %s" name ()
 (* Session + single-line window, as the diff pane uses it. *)
 let session ~path content = H.create_sync ~path content
 
-let line t n =
-  H.line_in_window (H.window t ~from_line:n ~to_line:n) ~from_line:n n
-;;
+let line t n = H.Window.line (H.window t ~from_line:n ~to_line:n) n
 
 (* Prefix match: upstream queries use dotted names ("keyword.function"),
    and the theme groups by the same prefix. *)
@@ -32,16 +30,16 @@ let () =
   check "string on line 4" (has ~capture:"string" (line t 4));
   (* A multi-line window indexes correctly. *)
   let w = H.window t ~from_line:2 ~to_line:4 in
-  check "window: comment at 2" (has ~capture:"comment" (H.line_in_window w ~from_line:2 2));
-  check "window: string at 4" (has ~capture:"string" (H.line_in_window w ~from_line:2 4));
-  check "unsupported extension yields no session" (Option.is_none (session ~path:"x.txt" src))
+  check "window: comment at 2" (has ~capture:"comment" (H.Window.line w 2));
+  check "window: string at 4" (has ~capture:"string" (H.Window.line w 4));
+  check "unsupported extension yields no session" (H.is_empty (session ~path:"x.txt" src))
 ;;
 
 (* Python, via our vendored grammar. *)
 let () =
   let py = "def foo():\n    return True\n" in
   let t = session ~path:"a.py" py in
-  check "py: session exists" (Option.is_some t);
+  check "py: session exists" (not (H.is_empty t));
   check "py: 'def' keyword" (has ~capture:"keyword" (line t 1));
   check "py: function name" (has ~capture:"function" (line t 1));
   check "py: 'return' keyword" (has ~capture:"keyword" (line t 2))
@@ -54,7 +52,7 @@ let () =
   check "js: 'function' keyword" (has ~capture:"keyword" (line t 1));
   check "js: function name" (has ~capture:"function" (line t 1));
   check "js: number" (has ~capture:"number" (line t 2));
-  check "js: jsx extension routes too" (Option.is_some (session ~path:"a.jsx" js))
+  check "js: jsx extension routes too" (not (H.is_empty (session ~path:"a.jsx" js)))
 ;;
 
 (* C, via our vendored grammar. *)
@@ -72,8 +70,10 @@ let () =
   List.iter Grammar_registry.extensions ~f:(fun ext ->
     match Grammar_registry.find ext with
     | None -> failwithf "registry advertises %s but find returned None" ext ()
-    | Some (language, source) ->
-      let (_ : Tree_sitter.Query.t) = Tree_sitter.Query.create (language ()) ~source in
+    | Some { Grammar_registry.language; highlights_query } ->
+      let (_ : Tree_sitter.Query.t) =
+        Tree_sitter.Query.create (language ()) ~source:highlights_query
+      in
       ())
 ;;
 

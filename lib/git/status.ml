@@ -138,3 +138,30 @@ let parse_line line : Entry.t option =
 let parse output =
   String.split_lines output |> List.filter_map ~f:parse_line
 ;;
+
+module Branch = struct
+  type t =
+    { head : string
+    ; ahead : int
+    ; behind : int
+    }
+end
+
+(* The --branch headers: "# branch.head main" and, with an upstream,
+   "# branch.ab +2 -1". *)
+let branch output =
+  let find prefix =
+    List.find_map (String.split_lines output) ~f:(fun l -> String.chop_prefix l ~prefix)
+  in
+  match find "# branch.head " with
+  | None -> None
+  | Some head ->
+    let ahead, behind =
+      match Option.map (find "# branch.ab ") ~f:(String.split ~on:' ') with
+      | Some [ a; b ] ->
+        ( Option.value (Int.of_string_opt a) ~default:0
+        , -Option.value (Int.of_string_opt b) ~default:0 )
+      | Some _ | None -> 0, 0
+    in
+    Some { Branch.head; ahead; behind }
+;;

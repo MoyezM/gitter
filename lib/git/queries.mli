@@ -5,7 +5,11 @@ open Async
     (a 500K-line diff costs ~100ms — several frames). Paths are passed as
     literal pathspecs — glob characters in filenames are not special. *)
 
-val status : unit -> Status.Entry.t list Or_error.t Deferred.t
+(** (raw porcelain output, entries, branch info) — raw is the poller's
+    change signature. *)
+val status
+  :  unit
+  -> (string * Status.Entry.t list * Status.Branch.t option) Or_error.t Deferred.t
 
 (** The file's content at HEAD — the base of a staged diff. Errors for
     files new since HEAD. *)

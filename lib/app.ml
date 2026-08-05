@@ -158,11 +158,26 @@ let app ~(dimensions : Dimensions.t Bonsai.t) (local_ graph)
   let with_modal = Modal.Component.component ~model:modal_model ~inject:inject_modal with_menu in
   let ~view:screen_view, ~handler = with_modal ~dimensions:screen_dimensions graph in
   let view =
-    let%arr screen_view and dimensions and layout_model in
+    let%arr screen_view
+    and dimensions
+    and layout_model
+    and branch = data.branch
+    and notice = data.notice in
+    let branch_info =
+      match (branch : Git.Status.Branch.t option) with
+      | None -> ""
+      | Some { head; ahead; behind } ->
+        let counts =
+          (if ahead > 0 then sprintf " +%d" ahead else "")
+          ^ if behind > 0 then sprintf " -%d" behind else ""
+        in
+        sprintf " %s%s" head counts
+    in
     View.vcat
       [ screen_view
       ; Status_bar.render
-          ~left:" gitter "
+          ~left:(" gitter " ^ branch_info)
+          ~notice
           ~right:(hints ~focused:layout_model.Layout.State.Model.focused ^ " ")
           ~width:dimensions.width
       ]

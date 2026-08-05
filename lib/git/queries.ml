@@ -6,11 +6,12 @@ open Async
 let status () =
   (* -uall: enumerate files INSIDE untracked directories — the default
      collapses a fully-untracked dir into one "dir/" entry, which can't be
-     diffed and hides its contents from review. *)
+     diffed and hides its contents from review. The raw output rides along
+     as the poller's cheap change signature. *)
   let%map.Deferred.Or_error output =
-    Runner.git [ "status"; "--porcelain=v2"; "--untracked-files=all" ]
+    Runner.git [ "status"; "--porcelain=v2"; "--branch"; "--untracked-files=all" ]
   in
-  Status.parse output
+  output, Status.parse output, Status.branch output
 ;;
 
 (* The file's content at HEAD — the base of a staged diff. *)

@@ -19,12 +19,12 @@ module Load = struct
   type t =
     | Not_loaded
     | Loading
-    | Loaded of Git.Status.Entry.t list Or_error.t
+    | Loaded of (Git.Status.Entry.t list * Git.Status.Branch.t option) Or_error.t
 end
 
 let entries_of_load (load : Load.t) =
   match load with
-  | Loaded (Ok entries) -> entries
+  | Loaded (Ok (entries, _)) -> entries
   | Not_loaded | Loading | Loaded (Error _) -> []
 ;;
 
@@ -54,6 +54,9 @@ type t =
       (* DESTRUCTIVE (worktree) — the app must gate it behind the confirm
          modal; this is the raw operation *)
   ; commit : (string -> unit Effect.t) Bonsai.t
+  ; branch : Git.Status.Branch.t option Bonsai.t
+  ; notice : string option Bonsai.t
+      (* the last failed mutation's message; cleared by the next success *)
   }
 
 let create (local_ graph) =
@@ -61,6 +64,10 @@ let create (local_ graph) =
   (* Fetch generation: refresh mid-flight starts a second fetch; only the
      NEWEST fetch may land, or a slow stale status overwrites a fresh one. *)
   let generation = ref 0 in
+  (* The poller's last-seen change signature; None means "baseline the next
+     poll silently" (set after every explicit fetch, so a user action isn't
+     followed by a redundant poll-triggered refresh). *)
+  let poll_signature : string option ref = ref None in
   (* Run a status fetch and swap the result in atomically. Deliberately no
      intermediate state transition: a refresh keeps SHOWING the old entries
      until the new ones land — flashing "loading" on every stage/unstage
@@ -70,11 +77,14 @@ let create (local_ graph) =
     let%bind.Effect mine =
       Effect.of_thunk (fun () ->
         incr generation;
+        poll_signature := None;
         !generation)
     in
     let%bind.Effect result = Effect.of_deferred_thunk (fun () -> Git.Queries.status ()) in
     let%bind.Effect current = Effect.of_thunk (fun () -> !generation) in
-    if current = mine then set_load (Loaded result) else Effect.Ignore
+    if current = mine
+    then set_load (Loaded (Or_error.map result ~f:(fun (_raw, entries, branch) -> entries, branch)))
+    else Effect.Ignore
   in
   (* Only the FIRST load shows the loading message. *)
   let fetch =
@@ -143,14 +153,24 @@ let create (local_ graph) =
       ~apply_action:(fun _ctx revision () -> revision + 1)
       graph
   in
+  let notice, set_notice = Bonsai.state None graph in
   (* An index mutation, then resync: the status reloads and [revision] tells
-     the diff pane its content is stale. Errors (e.g. the index moved under
-     a hunk apply) resync silently — the refresh IS the recovery. *)
+     the diff pane its content is stale. Failures surface in the status bar
+     (first line only) and clear on the next success; the refresh runs
+     either way — it IS the recovery. *)
   let mutate =
-    let%arr refresh and bump_revision in
+    let%arr refresh and bump_revision and set_notice in
     fun op ->
-      let%bind.Effect (_ : unit Or_error.t) = Effect.of_deferred_thunk op in
-      Effect.Many [ bump_revision (); refresh ]
+      let%bind.Effect result = Effect.of_deferred_thunk op in
+      let notice =
+        match result with
+        | Ok () -> None
+        | Error e ->
+          (match String.split_lines (Error.to_string_hum e) with
+           | first :: _ -> Some (String.prefix first 80)
+           | [] -> Some "git command failed")
+      in
+      Effect.Many [ set_notice notice; bump_revision (); refresh ]
   in
   let stage_path =
     let%arr mutate in
@@ -176,6 +196,82 @@ let create (local_ graph) =
     let%arr mutate in
     fun message -> mutate (fun () -> Git.Commit.run ~message)
   in
+  let branch =
+    let%arr load in
+    match load with
+    | Load.Loaded (Ok (_, branch)) -> branch
+    | Not_loaded | Loading | Loaded (Error _) -> None
+  in
+  (* External changes (editor saves, git commands in another terminal):
+     poll a cheap signature every 2s — the raw status output plus the
+     mtimes of .git/index and the selected worktree file (content edits to
+     an already-listed file change no status line, but must refresh the
+     open diff). Only a real change swaps state and bumps the revision, so
+     idle polls cost one subprocess and zero re-renders. Polls yield to
+     explicit fetches via the generation check. *)
+  let peek_selection = Bonsai.peek selection graph in
+  let poll =
+    let%arr set_load and bump_revision and peek_selection in
+    let%bind.Effect mine = Effect.of_thunk (fun () -> !generation) in
+    let%bind.Effect selected = peek_selection in
+    let selected_path =
+      match selected with
+      | Bonsai.Computation_status.Active (Some (path, _)) -> Some path
+      | Active None | Inactive -> None
+    in
+    let%bind.Effect outcome =
+      Effect.of_deferred_thunk (fun () ->
+        let open Async in
+        let mtime path =
+          match%map Monitor.try_with (fun () -> Unix.stat path) with
+          | Ok stats ->
+            Float.to_string (Time_float.Span.to_sec (Time_float.to_span_since_epoch stats.mtime))
+          | Error _ -> "absent"
+        in
+        let%bind status = Git.Queries.status () in
+        let%bind index_m = mtime ".git/index" in
+        let%map selected_m =
+          match selected_path with
+          | Some path -> mtime path
+          | None -> return "-"
+        in
+        let raw =
+          match status with
+          | Ok (raw, _, _) -> raw
+          | Error e -> "error:" ^ Error.to_string_hum e
+        in
+        status, String.concat ~sep:"|" [ raw; index_m; selected_m ])
+    in
+    let status, signature = outcome in
+    let%bind.Effect decision =
+      Effect.of_thunk (fun () ->
+        if !generation <> mine
+        then `Skip (* a user action interleaved; its fetch owns the state *)
+        else (
+          match !poll_signature with
+          | None ->
+            poll_signature := Some signature;
+            `Skip (* baseline after an explicit fetch *)
+          | Some prev when String.equal prev signature -> `Skip
+          | Some _ ->
+            poll_signature := Some signature;
+            `Changed))
+    in
+    match decision with
+    | `Skip -> Effect.Ignore
+    | `Changed ->
+      Effect.Many
+        [ set_load
+            (Loaded (Or_error.map status ~f:(fun (_raw, entries, branch) -> entries, branch)))
+        ; bump_revision ()
+        ]
+  in
+  Bonsai.Clock.every
+    ~when_to_start_next_effect:`Wait_period_after_previous_effect_finishes_blocking
+    ~trigger_on_activate:false
+    (Bonsai.return (Time_ns.Span.of_sec 2.))
+    poll
+    graph;
   { load
   ; refresh
   ; staged
@@ -188,5 +284,7 @@ let create (local_ graph) =
   ; unstage_hunk
   ; discard_path
   ; commit
+  ; branch
+  ; notice
   }
 ;;

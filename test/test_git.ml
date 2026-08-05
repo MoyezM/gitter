@@ -85,6 +85,25 @@ let () =
   check "unquote malformed octal is total" (String.equal (Status.unquote "\"x\\7zz\"") "x7zz")
 ;;
 
+(* --branch headers -> branch info. *)
+let () =
+  let out =
+    String.concat_lines
+      [ "# branch.oid abc123"; "# branch.head main"; "# branch.ab +2 -1"; "1 .M N... 1 2 3 4 5 x" ]
+  in
+  check
+    "branch with upstream"
+    (match Status.branch out with
+     | Some { head = "main"; ahead = 2; behind = 1 } -> true
+     | _ -> false);
+  check
+    "branch without upstream"
+    (match Status.branch "# branch.head feat/x\n" with
+     | Some { head = "feat/x"; ahead = 0; behind = 0 } -> true
+     | _ -> false);
+  check "no headers -> no branch" (Option.is_none (Status.branch "1 .M N... 1 2 3 4 5 x\n"))
+;;
+
 (* --- unified diff ------------------------------------------------------- *)
 
 let diff_sample =

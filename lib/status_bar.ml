@@ -1,18 +1,30 @@
 open! Core
 open! Bonsai_term
 
-(* A one-row bar composed at the app root (not inside Mode). It renders
-   facts that other layers publish — mode name, focus label, menu breadcrumb
-   — and owns no state of its own. *)
+(* The one-row bar at the bottom: app name and branch state on the left, a
+   transient error notice (red) beside them, contextual key hints on the
+   right. Owns no state — the root publishes the facts. *)
 
-let render ~left ~right ~width =
-  let gap = width - String.length left - String.length right in
-  let line =
-    if gap >= 1
-    then left ^ String.make gap ' ' ^ right
-    else if String.length left < width
-    then left ^ String.make (width - String.length left) ' '
-    else String.prefix left (Int.max 1 width)
+let seg attrs s = View.text ~attrs s
+
+let render ~left ~notice ~right ~width =
+  let notice =
+    match notice with
+    | None -> ""
+    | Some n -> "  " ^ n
   in
-  View.text ~attrs:Theme.status_bar line
+  let used = String.length left + String.length notice + String.length right in
+  let gap = width - used in
+  if gap >= 1
+  then
+    View.hcat
+      [ seg Theme.status_bar left
+      ; seg [ Attr.fg Theme.red; Attr.bg Theme.surface ] notice
+      ; seg Theme.status_bar (String.make gap ' ')
+      ; seg Theme.status_bar right
+      ]
+  else (
+    (* Cramped: keep the left facts and the notice, drop hints. *)
+    let line = String.prefix (left ^ notice) (Int.max 1 width) in
+    seg Theme.status_bar (line ^ String.make (Int.max 0 (width - String.length line)) ' '))
 ;;

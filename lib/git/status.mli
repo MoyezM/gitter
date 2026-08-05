@@ -24,3 +24,14 @@ end
 val unquote : string -> string
 
 val parse : string -> Entry.t list
+
+module Branch : sig
+  type t =
+    { head : string (** branch name; "(detached)" when detached *)
+    ; ahead : int (** commits ahead of upstream; 0 without one *)
+    ; behind : int
+    }
+end
+
+(** Parsed from the [--branch] porcelain headers; None if they're absent. *)
+val branch : string -> Branch.t option

@@ -73,6 +73,19 @@ let component
     ~callback
     watch
     graph;
+  (* When the document's SHAPE changes under the kept cursor (a
+     revision-bump refetch after staging shrinks/renumbers it), re-anchor
+     with [Reveal] so hunk staging can't silently retarget. Keyed on the
+     row count, not the payload: the two-phase highlight swap-in delivers
+     an identical document and must not yank the viewport. *)
+  Bonsai.Edge.on_change
+    ~equal:Int.equal
+    ~callback:
+      (let%arr inject in
+       fun (_ : int) -> inject State.Action.Reveal)
+    (let%arr doc_input in
+     Array.length (fst doc_input))
+    graph;
   let view =
     let%arr content and model and dimensions in
     Render.render ~content ~model ~dimensions
@@ -86,7 +99,7 @@ let component
     and stage_hunk
     and unstage_hunk
     and copy_path in
-    let doc, (_ : int) = doc_input in
+    let doc, height = doc_input in
     (* s/u apply the hunk enclosing the cursor to the index (the cursor may
        be off-screen after wheel scrolling — the selection stays
        authoritative); the raw hunk bytes come from the payload's parsed
@@ -109,30 +122,37 @@ let component
       | _ -> Effect.Ignore
     in
     fun (event : Event.t) ->
-      if Array.is_empty doc
-      then Effect.Ignore
-      else (
-        match event with
-        | Event.Key_press { key = ASCII 's'; mods = [] } ->
-          hunk_op ~wanted_side:`Unstaged stage_hunk
-        | Key_press { key = ASCII 'u'; mods = [] } ->
-          hunk_op ~wanted_side:`Staged unstage_hunk
-        | Key_press { key = ASCII 'y'; mods = [] } ->
-          (match selection with
-           | Some (path, _) ->
-             (* path:LINE — the cursor row's worktree-side line number
-                (old side for deletions), the jump format editors accept. *)
-             let target =
+      match event with
+      (* y works even when there is no document (binary diffs, messages):
+         it degrades to the plain path. *)
+      | Event.Key_press { key = ASCII 'y'; mods = [] } ->
+        (match selection with
+         | Some (path, _) ->
+           (* path:LINE — the cursor row's worktree-side line number
+              (old side for deletions), the jump format editors accept. *)
+           let target =
+             if Array.is_empty doc
+             then path
+             else (
                match doc.(State.effective_cursor doc model) with
                | Document.Diff_line (old_no, new_no, _) ->
                  (match Option.first_some new_no old_no with
                   | Some n -> sprintf "%s:%d" path n
                   | None -> path)
-               | File_header _ | Hunk_header _ -> path
-             in
-             copy_path target
-           | None -> Effect.Ignore)
-        | Event.Key_press { key = ASCII 'j'; mods = [] }
+               | File_header _ | Hunk_header _ -> path)
+           in
+           copy_path target
+         | None -> Effect.Ignore)
+      | event ->
+        if Array.is_empty doc
+        then Effect.Ignore
+        else (
+          match event with
+          | Event.Key_press { key = ASCII 's'; mods = [] } ->
+            hunk_op ~wanted_side:`Unstaged stage_hunk
+          | Key_press { key = ASCII 'u'; mods = [] } ->
+            hunk_op ~wanted_side:`Staged unstage_hunk
+          | Event.Key_press { key = ASCII 'j'; mods = [] }
         | Key_press { key = Arrow `Down; mods = [] } -> inject (State.Action.Move 1)
         | Key_press { key = ASCII 'k'; mods = [] }
         | Key_press { key = Arrow `Up; mods = [] } -> inject (Move (-1))
@@ -146,7 +166,10 @@ let component
         | Key_press { key = Arrow `Left; mods = [] } -> inject (Pan (-1))
         | Mouse { kind = Scroll `Down; _ } -> inject (Wheel 1)
         | Mouse { kind = Scroll `Up; _ } -> inject (Wheel (-1))
-        | Mouse { kind = Left; position; _ } -> inject (Click position.y)
+        | Mouse { kind = Left; position; _ } ->
+          (* Map through the scroll this handler PAINTED with (render
+             clamps identically), so the click hits what the user saw. *)
+          inject (Click (State.clamp_scroll doc ~height model.scroll + position.y))
         | _ -> Effect.Ignore)
   in
   ~view, ~handler

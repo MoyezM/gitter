@@ -15,8 +15,9 @@ module Action = struct
     | Move of int
     | Half_page of int
     | Wheel of int
-    | Click of int
+    | Click of int (* ABSOLUTE document row (mapped from the painted scroll) *)
     | Pan of int (* direction: +1 right, -1 left *)
+    | Reveal (* after a doc replacement: re-snap the kept cursor, show it *)
     | Reset
   [@@deriving sexp_of]
 end
@@ -118,7 +119,15 @@ let apply_action (doc : Document.t) (model : Model.t) (action : Action.t) ~heigh
   | Move by -> move doc model ~height ~by
   | Half_page dir -> move doc model ~height ~by:(dir * height / 2)
   | Wheel dir -> wheel doc model ~height ~dir
-  | Click row -> { model with Model.cursor = snap doc ~dir:1 (model.scroll + row) }
+  | Click row -> { model with Model.cursor = snap doc ~dir:1 row }
+  | Reveal ->
+    (* A new document landed under the same selection (revision bump):
+       the kept cursor may now point outside it. Re-snap and reveal so
+       both the highlight and hunk staging target something visible;
+       [follow] is a no-op when the cursor is already in view, so the
+       common stage-and-resync case doesn't move the viewport. *)
+    let cursor = snap doc ~dir:1 model.cursor in
+    { model with Model.cursor; scroll = follow doc ~height ~cursor model.scroll }
   | Pan dir ->
     { model with
       Model.pan =

@@ -41,9 +41,27 @@ let copy_via_tool text =
   match List.hd (candidates ()) with
   | None -> return (Or_error.error_string "no clipboard tool on PATH")
   | Some (prog, args) ->
-    (match%map Process.run ~prog ~args ~stdin:text () with
-     | Ok (_ : string) -> Ok ()
-     | Error e -> Error (Error.tag_s e ~tag:[%sexp "clipboard", (prog : string)]))
+    (match%bind Process.create ~prog ~args () with
+     | Error e -> return (Error (Error.tag_s e ~tag:[%sexp "clipboard", (prog : string)]))
+     | Ok p ->
+       Writer.write (Process.stdin p) text;
+       let%bind () = Writer.close (Process.stdin p) in
+       (* Drain rather than read-to-EOF: xclip/wl-copy fork a child that
+          serves the selection and HOLDS the inherited stdout open, so
+          waiting for output EOF (Process.run style) would never resolve.
+          The parent exits promptly once stdin is consumed — wait for the
+          exit status, with a timeout as backstop (timeout after the
+          input was consumed still means the copy landed). *)
+       don't_wait_for (Reader.drain (Process.stdout p));
+       don't_wait_for (Reader.drain (Process.stderr p));
+       (match%map Clock.with_timeout (Time_float.Span.of_sec 5.) (Process.wait p) with
+        | `Result (Ok ()) | `Timeout -> Ok ()
+        | `Result (Error _ as status) ->
+          Or_error.error_s
+            [%sexp
+              "clipboard"
+            , (prog : string)
+            , (Unix.Exit_or_signal.to_string_hum status : string)]))
 ;;
 
 let base64 s =

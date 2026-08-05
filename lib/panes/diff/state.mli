@@ -25,10 +25,17 @@ module Action : sig
     | Move of int (** cursor by n rows (snapped to a diff row) *)
     | Half_page of int (** direction: +1 down, -1 up *)
     | Wheel of int (** direction: +1 down, -1 up *)
-    | Click of int (** viewport row that was clicked *)
+    | Click of int
+        (** ABSOLUTE document row: the handler maps the clicked viewport
+            row through the scroll it painted with, so clicks resolve
+            against what the user saw even if scroll actions share the
+            frame *)
     | Pan of int
         (** direction: +1 right, -1 left; 4-column steps, clamped just past
             the longest visible line; the gutter never pans *)
+    | Reveal
+        (** after a doc replacement under the same selection: re-snap the
+            kept cursor into the new document and reveal it *)
     | Reset
   [@@deriving sexp_of]
 end

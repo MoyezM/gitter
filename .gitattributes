@@ -1,0 +1,9 @@
+# Keep GitHub's language stats about the app, not its vendored inputs.
+# grammars/ is 65MB of vendored/generated tree-sitter C (parser_*.c,
+# scanner_*.c via scripts/add-grammar) that would otherwise dominate the
+# language bar.
+grammars/** linguist-vendored
+
+# Archived embedded-terminal component (not built; see lib/terminal/README.md).
+lib/terminal/** linguist-vendored
+lib/term_pane/** linguist-vendored

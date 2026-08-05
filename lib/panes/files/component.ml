@@ -67,7 +67,12 @@ let component
       | Mouse { kind = Scroll `Down; _ } -> inject (Wheel { dir = 1; height })
       | Mouse { kind = Scroll `Up; _ } -> inject (Wheel { dir = -1; height })
       | Mouse { kind = Left; position; _ } ->
-        inject (Activate { row = position.y + offset; height })
+        (* Blank space below a short tree is not a row — activating there
+           would clamp onto the last row and toggle/select it. *)
+        let row = position.y + offset in
+        if row >= List.length rows
+        then Effect.Ignore
+        else inject (Activate { row; height })
       | _ -> Effect.Ignore
   in
   ~view, ~handler

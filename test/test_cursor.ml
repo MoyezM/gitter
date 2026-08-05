@@ -81,7 +81,15 @@ let () =
 let () =
   let empty : Document.t = [||] in
   List.iter
-    [ A.Move 1; A.Move (-1); A.Half_page 1; A.Wheel 1; A.Wheel (-1); A.Click 0; A.Reset ]
+    [ A.Move 1
+    ; A.Move (-1)
+    ; A.Half_page 1
+    ; A.Wheel 1
+    ; A.Wheel (-1)
+    ; A.Click 0
+    ; A.Reveal
+    ; A.Reset
+    ]
     ~f:(fun action ->
       let m = apply empty Model.initial action in
       check "empty doc action is total" (m.cursor = 0 && m.scroll = 0))
@@ -98,13 +106,24 @@ let () =
   check "move reveals the cursor" (m.scroll <= m.cursor && m.cursor < m.scroll + 5)
 ;;
 
-(* Reset, and the resize re-anchor: Click must hit the row render displayed
-   after a pane growth left a stale scroll. *)
+(* Reset; Click is an ABSOLUTE document row (the handler maps the clicked
+   viewport row through the scroll it painted with). *)
 let () =
   let r = apply many { Model.cursor = 42; scroll = 40; pan = 0 } A.Reset in
   check "reset" (r.cursor = 0 && r.scroll = 0);
-  let m = apply ~height:50 many { Model.cursor = 99; scroll = 95; pan = 0 } (A.Click 10) in
-  check "click after resize hits the displayed row" (m.cursor = 60)
+  let m = apply ~height:50 many { Model.cursor = 99; scroll = 95; pan = 0 } (A.Click 60) in
+  check "click is an absolute document row" (m.cursor = 60)
+;;
+
+(* Reveal: after a doc replacement the kept cursor re-snaps into the new
+   document and the view moves only if needed to show it. *)
+let () =
+  let short = Array.init 12 ~f:line in
+  let m = apply ~height:5 short { Model.cursor = 90; scroll = 0; pan = 0 } A.Reveal in
+  check "reveal snaps a beyond-doc cursor" (m.cursor = 11);
+  check "reveal shows the snapped cursor" (m.scroll <= m.cursor && m.cursor < m.scroll + 5);
+  let m = apply ~height:5 many { Model.cursor = 4; scroll = 2; pan = 0 } A.Reveal in
+  check "reveal is a no-op for a visible cursor" (m.cursor = 4 && m.scroll = 2)
 ;;
 
 (* Pan: 4-column steps, clamped to just past the longest visible line, and

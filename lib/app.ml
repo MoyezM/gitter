@@ -111,9 +111,9 @@ let commands ~(layout : Layout.Component.Controls.t Bonsai.t) ~refresh ~commit =
 (* Context hints for the status bar: the focused pane's keys. *)
 let hints ~focused =
   match focused with
-  | "staged" -> "j/k:move  h/l:fold  u:unstage  c:commit  e:edit  Space:menu  Tab:pane"
-  | "changes" -> "j/k:move  s:stage  d:discard  c:commit  e:edit  Space:menu  Tab:pane"
-  | "diff" -> "j/k:move  n/p:page  h/l:pan  s/u:\u{00B1}hunk  e:edit  Space:menu"
+  | "staged" -> "j/k:move  u:unstage  c:commit  e:edit  C-t:term  Space:menu  Tab:pane"
+  | "changes" -> "j/k:move  s:stage  d:discard  c:commit  e:edit  C-t:term  Tab:pane"
+  | "diff" -> "j/k:move  n/p:page  h/l:pan  s/u:\u{00B1}hunk  e:edit  C-t:term"
   | _ -> "Space:menu  Tab:focus  Ctrl-C:quit"
 ;;
 

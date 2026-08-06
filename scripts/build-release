@@ -1,0 +1,124 @@
+#!/usr/bin/env bash
+# Build the artifact .github/workflows/release.yml ships, on this machine.
+# Use it to reproduce a bug a tester hit against a published binary: same
+# profile, same static linking, same strip + ad-hoc re-sign.
+#
+#   scripts/build-release [options]
+#
+#   --version <tag>  stamped into `gitter -version`
+#                    (default: git describe, e.g. v0.0.2-3-gdeadbee)
+#   --no-strip       keep the symbol table for lldb/sample. NOTE the shipped
+#                    binary IS stripped — this diverges from what users run.
+#                    You rarely need it: OCaml embeds its own debug-event
+#                    tables, so OCAMLRUNPARAM=b backtraces (file + line)
+#                    survive strip intact.
+#   --tarball        also write the release tarball and checksums.txt, named
+#                    exactly as the release job names them
+#   --no-nix         build with the current environment instead of the #ci
+#                    dev shell. Faster when iterating, but no longer a
+#                    faithful reproduction — the shell is what pins the
+#                    macOS deployment target and the static lib dir.
+#
+# Output lands in dist/ (gitignored).
+#
+# Why the nix shell: `nix develop path:.#ci` is what CI builds in, and it
+# exports both GITTER_STATIC_LIB_DIR (bin/dune reads it to link libvterm and
+# sqlite statically — the released binary may not reference /nix/store) and
+# MACOSX_DEPLOYMENT_TARGET/SDKROOT from the pinned apple-sdk. Building
+# outside it silently produces a different binary.
+#
+# Why --root: run from a git worktree, dune otherwise walks up past the
+# worktree and picks the main checkout's dune-project.
+set -euo pipefail
+
+root="$(cd "$(dirname "$0")/.." && pwd)"
+cd "$root"
+
+version=""
+strip_binary=1
+make_tarball=0
+use_nix=1
+
+die() { printf 'error: %s\n' "$1" >&2; exit 1; }
+
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --version) [ $# -ge 2 ] || die "--version needs an argument"; version="$2"; shift 2 ;;
+    --no-strip) strip_binary=0; shift ;;
+    --tarball) make_tarball=1; shift ;;
+    --no-nix) use_nix=0; shift ;;
+    # the header comment IS the help text — print it rather than restating it
+    -h|--help) awk 'NR > 1 && /^#/ { sub(/^# ?/, ""); print; next } NR > 1 { exit }' "$0"; exit 0 ;;
+    *) die "unknown option: $1 (try --help)" ;;
+  esac
+done
+
+[ "$(uname -s)" = Darwin ] || die "release artifacts are macOS-only (this is $(uname -s))"
+[ "$(uname -m)" = arm64 ] || die "only macos-arm64 is published (this is $(uname -m))"
+
+if [ -z "$version" ]; then
+  version="$(git describe --tags --always --dirty 2>/dev/null || echo dev)"
+fi
+
+if [ "$use_nix" -eq 1 ]; then
+  command -v nix >/dev/null || die "nix not found — install nix, or pass --no-nix"
+  build() { GITTER_VERSION="$version" nix develop path:.#ci -c "$@"; }
+else
+  echo "== WARNING: --no-nix, this is not a faithful reproduction of the release build"
+  build() { GITTER_VERSION="$version" "$@"; }
+fi
+
+echo "== building $version (release profile)"
+build dune build --root . --profile release bin/main.exe
+
+rm -rf dist && mkdir dist
+# install -m, not cp: dune write-protects _build outputs, and a read-only
+# copy makes the in-place strip fail.
+install -m 755 _build/default/bin/main.exe dist/gitter
+cp LICENSE README.md dist/
+
+# Portable means: nothing dynamically linked outside /usr/lib and /System. A
+# /nix/store path would make the binary useless off this machine.
+echo "== portability gate"
+if otool -L dist/gitter | grep -q '/nix/store'; then
+  otool -L dist/gitter >&2
+  die "binary references /nix/store"
+fi
+
+if [ "$strip_binary" -eq 1 ]; then
+  # strip invalidates the linker's ad-hoc signature, and arm64 macOS refuses
+  # to run unsigned binaries — re-sign ad hoc after stripping.
+  echo "== strip and re-sign"
+  strip dist/gitter
+  codesign -f -s - dist/gitter
+else
+  echo "== skipping strip (--no-strip); keeping the linker's ad-hoc signature"
+fi
+
+echo "== smoke test"
+got="$(./dist/gitter -version)"
+[ "$got" = "$version" ] || die "-version printed '$got', expected '$version'"
+
+if [ "$make_tarball" -eq 1 ]; then
+  echo "== packaging"
+  tarball="gitter-${version}-macos-arm64.tar.gz"
+  # name the members explicitly so the tarball never includes itself
+  tar czf "dist/$tarball" -C dist gitter LICENSE README.md
+  ( cd dist && shasum -a 256 "$tarball" > checksums.txt )
+fi
+
+minos="$(otool -l dist/gitter | awk '/LC_BUILD_VERSION/ { f = 1 } f && /^ *minos/ { print $2; exit }')"
+cat <<EOF
+
+built: dist/gitter ($version)
+  arch    $(uname -m)
+  minos   $minos
+  links   $(otool -L dist/gitter | tail -n +2 | awk '{ print $1 }' | tr '\n' ' ')
+
+To reproduce a crash a tester reported, run it against THEIR repo and keep
+stderr — the TUI's alternate screen swallows it otherwise:
+
+  cd /path/to/their/repo && OCAMLRUNPARAM=b $root/dist/gitter 2>/tmp/gitter.err
+
+OCAMLRUNPARAM=b gives a file+line backtrace even from the stripped binary.
+EOF

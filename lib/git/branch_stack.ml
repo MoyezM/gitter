@@ -183,6 +183,37 @@ let parse ~heads ~dag ~reflogs ~trunk ~current =
     let parents =
       Map.mapi live ~f:(fun ~key:name ~data:sha -> parent_of name sha)
     in
+    (* Matching at reflog TIPS is what re-attaches a child to an amended
+       parent, but it also costs the antisymmetry that head shas alone
+       guarantee: after enough rebasing two branches can each hold a tip
+       inside the other's history, and [parent_of] then names each the
+       other's parent. Reattach exactly the branches ON such a cycle to the
+       trunk, so [parents] is always a forest rooted there — a branch that
+       merely sits above a cycle keeps its real parent, which becomes valid
+       again once the cycle is cut. Everything downstream depends on this:
+       the sibling sort walks CHILDREN with no visited set of its own (so a
+       cycle is unbounded recursion), and [walk]'s guard would terminate but
+       drop the entire cycle from the display. *)
+    let parents =
+      let on_cycle name =
+        (* Following [name]'s parents leads back to [name] itself. Stopping
+           on any repeat keeps a branch that merely runs INTO someone else's
+           loop off the list. *)
+        let rec go n seen =
+          match Map.find parents n |> Option.join with
+          | None -> false
+          | Some p ->
+            if String.equal p name
+            then true
+            else if Set.mem seen p
+            then false
+            else go p (Set.add seen p)
+        in
+        go name (String.Set.singleton name)
+      in
+      Map.mapi parents ~f:(fun ~key:name ~data:parent ->
+        if on_cycle name then Some trunk else parent)
+    in
     let children =
       Map.fold parents ~init:String.Map.empty ~f:(fun ~key:child ~data:parent acc ->
         match parent with

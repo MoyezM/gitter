@@ -35,7 +35,9 @@ jobs:
       - name: prepare artifact
         run: |
           mkdir dist
-          cp _build/default/bin/main.exe dist/gitter
+          # install -m, not cp: dune write-protects _build outputs, and a
+          # read-only copy makes the in-place strip fail
+          install -m 755 _build/default/bin/main.exe dist/gitter
           cp LICENSE README.md dist/
 
       # Portable means: nothing dynamically linked outside /usr/lib and

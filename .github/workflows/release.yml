@@ -104,6 +104,8 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: read
+    outputs:
+      updated: ${{ steps.guard.outputs.have_token }}
     steps:
       # secrets can't gate a job-level if — probe in a step, gate the rest on
       # its output. A missing token is fine; the tap just doesn't get updated.
@@ -141,3 +143,22 @@ jobs:
           git -C tap -c user.name='gitter-release-bot' -c user.email='noreply@github.com' \
             commit -m "gitter ${TAG}"
           git -C tap push
+
+  # The end-user test: a fresh runner (native brew, current CLT) installs
+  # from the tap exactly like a user would and checks the version.
+  verify-tap:
+    needs: update-tap
+    if: needs.update-tap.outputs.updated == 'true'
+    runs-on: macos-15
+    timeout-minutes: 15
+    steps:
+      - name: brew install from the tap
+        env:
+          TAG: ${{ github.ref_name }}
+          HOMEBREW_NO_AUTO_UPDATE: '1'
+          HOMEBREW_NO_INSTALL_CLEANUP: '1'
+        run: |
+          brew install MoyezM/tap/gitter
+          got="$(gitter -version)"
+          echo "installed: $got"
+          [ "$got" = "$TAG" ] || { echo "FAIL: expected $TAG, got $got" >&2; exit 1; }

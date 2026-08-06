@@ -1,0 +1,40 @@
+#!/usr/bin/env bash
+# Dev tool: test the end-user `brew install MoyezM/tap/gitter` flow without
+# touching the system. Homebrew can't live in the nix flake (it's a
+# self-mutating git prefix — the antithesis of the store), so this
+# provisions a THROWAWAY brew in ~/.cache/gitter-scratch-brew and installs
+# gitter from the tap through it. Nothing lands on PATH or in /opt/homebrew;
+# `rm -rf ~/.cache/gitter-scratch-brew` removes every trace.
+#
+#   scripts/verify-brew-install [expected-version]   # e.g. v0.0.1
+#
+# Note: brew refuses to run with outdated Xcode Command Line Tools even for
+# binary-only formulae — that failure mode is this machine being behind on
+# Apple updates, not a broken tap (real brew users always have current CLT;
+# the release workflow's verify-tap job covers them).
+set -euo pipefail
+
+prefix="${GITTER_SCRATCH_BREW:-$HOME/.cache/gitter-scratch-brew}"
+export HOMEBREW_NO_AUTO_UPDATE=1 HOMEBREW_NO_ANALYTICS=1 \
+  HOMEBREW_NO_INSTALL_CLEANUP=1 HOMEBREW_NO_ENV_HINTS=1
+
+if [ ! -x "$prefix/bin/brew" ]; then
+  echo "== cloning throwaway Homebrew into $prefix"
+  git clone --depth 1 https://github.com/Homebrew/brew "$prefix"
+fi
+
+brew="$prefix/bin/brew"
+# reinstall when already present so re-runs test the CURRENT formula
+if "$brew" list gitter >/dev/null 2>&1; then
+  "$brew" reinstall MoyezM/tap/gitter
+else
+  "$brew" install MoyezM/tap/gitter
+fi
+
+got="$("$prefix/bin/gitter" -version)"
+echo "installed: $got"
+if [ $# -ge 1 ] && [ "$got" != "$1" ]; then
+  echo "FAIL: expected $1, got $got" >&2
+  exit 1
+fi
+echo "brew install flow OK ($got)"

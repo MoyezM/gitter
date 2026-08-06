@@ -1,6 +1,7 @@
 open! Core
 module Status = Gitter.Git.Status
 module Diff = Gitter.Git.Diff
+module Branch_stack = Gitter.Git.Branch_stack
 
 let check name cond = if not cond then failwithf "FAILED: %s" name ()
 
@@ -216,6 +217,70 @@ let () =
        match e.kind with
        | Gitter.Git.Status.Entry.Kind.Renamed { from } -> String.equal from "old.ml"
        | _ -> false))
+;;
+
+(* --- branch stack ------------------------------------------------------- *)
+
+(* Two commit lines above the base: c -> a -> p -> m and b -> q -> m. *)
+let stack_sha i = sprintf "%040d" i
+let m, p, a, q, b, c = ( stack_sha 0, stack_sha 1, stack_sha 2
+                       , stack_sha 3, stack_sha 4, stack_sha 5 )
+
+let stack_dag =
+  String.concat
+    ~sep:"\n"
+    [ sprintf "%s %s" c a
+    ; sprintf "%s %s" a p
+    ; sprintf "%s %s" p m
+    ; sprintf "%s %s" b q
+    ; sprintf "%s %s" q m
+    ; m
+    ]
+;;
+
+let stack_heads ~with_ccc =
+  String.concat
+    ~sep:"\n"
+    ([ sprintf "main\t%s" m; sprintf "aaa\t%s" a; sprintf "bbb\t%s" b ]
+     @ if with_ccc then [ sprintf "ccc\t%s" c ] else [])
+;;
+
+(* aaa once sat at q (inside bbb's history) and bbb at p (inside aaa's) —
+   what a couple of rebases inside a stack leave behind. Matching at reflog
+   tips then names each branch the other's parent. *)
+let crossed_reflogs =
+  String.concat ~sep:"\n" [ sprintf "aaa\t%s" q; sprintf "bbb\t%s" p ]
+;;
+
+let stack ~with_ccc ~reflogs =
+  Branch_stack.parse
+    ~heads:(stack_heads ~with_ccc)
+    ~dag:stack_dag
+    ~reflogs
+    ~trunk:"main"
+    ~current:None
+  |> List.map ~f:(fun br -> br.Branch_stack.Branch.name, br.Branch_stack.Branch.depth)
+;;
+
+(* REGRESSION: the cycle used to make the sibling sort recurse until the
+   stack died — subtree_has_current/subtree_rank walk children and, unlike
+   [walk], carry no visited set. It only fires when some node has TWO
+   children (List.sort never calls the comparator on a singleton), hence
+   the ccc case. With one child it terminated but dropped the whole cycle
+   from the display instead. Both must now match the uncrossed tree. *)
+let () =
+  let expected = [ "main", 0; "aaa", 1; "ccc", 2; "bbb", 1 ] in
+  check
+    "stack: plain reflogs give the trunk-rooted tree"
+    ([%equal: (string * int) list] (stack ~with_ccc:true ~reflogs:"") expected);
+  check
+    "stack: parent cycle is cut, sibling sort terminates"
+    ([%equal: (string * int) list] (stack ~with_ccc:true ~reflogs:crossed_reflogs) expected);
+  check
+    "stack: parent cycle does not swallow its branches"
+    ([%equal: (string * int) list]
+       (stack ~with_ccc:false ~reflogs:crossed_reflogs)
+       [ "main", 0; "aaa", 1; "bbb", 1 ])
 ;;
 
 let () = print_endline "All git parser tests passed."

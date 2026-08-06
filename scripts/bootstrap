@@ -9,7 +9,11 @@ set -euo pipefail
 
 root="$(cd "$(dirname "$0")/.." && pwd)"
 SWITCH=5.2.0+ox
-OX_REPO="git+https://github.com/oxcaml/opam-repository.git"
+# PINNED: unpinned HEAD means the toolchain can change (or break) under us
+# overnight — CI cold builds must be reproducible. Bump the sha DELIBERATELY
+# to upgrade the toolchain (this also rolls the CI cache key, forcing a
+# clean rebuild).
+OX_REPO="git+https://github.com/oxcaml/opam-repository.git#d65f081024758576f7a848bbd369863e7f7c1e81"
 
 if ! command -v opam >/dev/null; then
   echo "opam not found — enter the dev shell first (nix develop / direnv allow)" >&2

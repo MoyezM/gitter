@@ -30,6 +30,7 @@ jobs:
           key: opam-v2-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('gitter.opam', 'scripts/bootstrap', 'flake.lock') }}
           restore-keys: |
             opam-v2-${{ runner.os }}-${{ runner.arch }}-
+            opam-${{ runner.os }}-${{ runner.arch }}-
 
       - name: bootstrap opam switch
         if: steps.opam-cache.outputs.cache-hit != 'true'

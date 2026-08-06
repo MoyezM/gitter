@@ -1,0 +1,28 @@
+#!/usr/bin/env bash
+# Rulesets as config-as-code: .github/rulesets/main.json is the source of
+# truth; this applies it to GitHub (create if missing, update in place
+# otherwise). Edit the JSON, run this, commit the change.
+#
+#   scripts/apply-ruleset
+#
+# Matching is BY NAME — renaming the ruleset in the JSON makes this create
+# a new one and orphan the old (delete it in Settings -> Rules, or via
+# `gh api --method DELETE repos/{owner}/{repo}/rulesets/<id>`).
+set -euo pipefail
+
+root="$(cd "$(dirname "$0")/.." && pwd)"
+file="$root/.github/rulesets/main.json"
+
+name="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["name"])' "$file")"
+
+# gh resolves {owner}/{repo} from the current repo's remote
+id="$(RULESET_NAME="$name" gh api 'repos/{owner}/{repo}/rulesets' \
+  --jq '.[] | select(.name == env.RULESET_NAME) | .id' | head -n1)"
+
+if [ -n "$id" ]; then
+  gh api --method PUT "repos/{owner}/{repo}/rulesets/$id" --input "$file" \
+    --jq '"updated ruleset \(.id): \(.name) [\(.enforcement)]"'
+else
+  gh api --method POST 'repos/{owner}/{repo}/rulesets' --input "$file" \
+    --jq '"created ruleset \(.id): \(.name) [\(.enforcement)]"'
+fi

@@ -20,6 +20,14 @@ jobs:
 
       - uses: nixbuild/nix-quick-install-action@v35
 
+      # Cache the nix store itself: the ci-shell closure otherwise
+      # re-substitutes from cache.nixos.org every run (15-50s, high
+      # variance — runners share bandwidth).
+      - uses: nix-community/cache-nix-action@v7
+        with:
+          primary-key: nix-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('flake.nix', 'flake.lock') }}
+          restore-prefixes-first-match: nix-${{ runner.os }}-${{ runner.arch }}-
+
       # Explicit restore/save (not the combined action): an EXACT key hit
       # means the switch matches gitter.opam bit-for-bit, so bootstrap can
       # be skipped outright; and saving right after bootstrap protects the

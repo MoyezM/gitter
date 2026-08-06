@@ -19,6 +19,11 @@ jobs:
 
       - uses: nixbuild/nix-quick-install-action@v35
 
+      - uses: nix-community/cache-nix-action@v7
+        with:
+          primary-key: nix-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('flake.nix', 'flake.lock') }}
+          restore-prefixes-first-match: nix-${{ runner.os }}-${{ runner.arch }}-
+
       # Same explicit restore/save + skip-on-exact-hit as ci.yml — in the
       # normal flow CI has already populated this cache, so a release run
       # skips bootstrap entirely.

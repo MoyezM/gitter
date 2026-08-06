@@ -35,7 +35,7 @@ jobs:
 
       - name: bootstrap opam switch
         if: steps.opam-cache.outputs.cache-hit != 'true'
-        run: nix develop path:.#ci -c ./scripts/bootstrap
+        run: nix develop path:. -c ./scripts/bootstrap
 
       - name: prune opam cache
         if: steps.opam-cache.outputs.cache-hit != 'true'
@@ -48,4 +48,4 @@ jobs:
           key: opam-v3-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('gitter.opam', 'scripts/bootstrap', 'flake.lock') }}
 
       - name: build and test
-        run: nix develop path:.#ci -c dune build @default @runtest
+        run: nix develop path:.#ci -c dune build bin/main.exe @runtest

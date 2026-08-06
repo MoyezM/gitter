@@ -33,7 +33,7 @@ jobs:
 
       - name: bootstrap opam switch
         if: steps.opam-cache.outputs.cache-hit != 'true'
-        run: nix develop path:.#ci -c ./scripts/bootstrap
+        run: nix develop path:. -c ./scripts/bootstrap
 
       - name: prune opam cache
         if: steps.opam-cache.outputs.cache-hit != 'true'

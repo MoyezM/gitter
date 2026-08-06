@@ -64,8 +64,10 @@
         # handles our C stubs against nix include paths fine; the stdenv
         # clang closure alone costs ~60s of substitution per run. No
         # python/vim/curl (pty harnesses don't run in CI).
+        # (cold bootstrap runs in the FULL default shell — this one only
+        # ever hosts warm builds, so no autoconf, and the runner has git)
         ci = pkgs.mkShellNoCC {
-          packages = with pkgs; [ opam pkg-config gmp autoconf sqlite libvterm-neovim git ];
+          packages = with pkgs; [ opam pkg-config gmp sqlite libvterm-neovim ];
           shellHook = ''
             export GITTER_STATIC_LIB_DIR=${static-libs pkgs}/lib
             if opam env --switch=5.2.0+ox --set-switch >/dev/null 2>&1; then

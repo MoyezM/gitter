@@ -59,6 +59,20 @@
     in
     {
       devShells = forSystems (pkgs: {
+        # CI shell: the minimum the cached-switch build path needs. No nix
+        # C toolchain (mkShellNoCC) — runners use Apple clang, which
+        # handles our C stubs against nix include paths fine; the stdenv
+        # clang closure alone costs ~60s of substitution per run. No
+        # python/vim/curl (pty harnesses don't run in CI).
+        ci = pkgs.mkShellNoCC {
+          packages = with pkgs; [ opam pkg-config gmp autoconf sqlite libvterm-neovim git ];
+          shellHook = ''
+            export GITTER_STATIC_LIB_DIR=${static-libs pkgs}/lib
+            if opam env --switch=5.2.0+ox --set-switch >/dev/null 2>&1; then
+              eval "$(opam env --switch=5.2.0+ox --set-switch)"
+            fi
+          '';
+        };
         default = pkgs.mkShell {
           packages = with pkgs; [
             # OCaml bootstrap: the tool only — the switch lives in ~/.opam

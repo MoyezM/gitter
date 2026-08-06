@@ -7,8 +7,9 @@ name: ci
 on:
   push:
     branches: [main]
+  # no base-branch filter: Graphite stacked PRs target their PARENT branch,
+  # not main — a [main] filter would leave mid-stack PRs without CI
   pull_request:
-    branches: [main]
 
 jobs:
   build-test:

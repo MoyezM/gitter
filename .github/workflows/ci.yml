@@ -18,7 +18,15 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - uses: DeterminateSystems/nix-installer-action@v16
+      - uses: nixbuild/nix-quick-install-action@v35
+
+      # Cache the nix store itself: the ci-shell closure otherwise
+      # re-substitutes from cache.nixos.org every run (15-50s, high
+      # variance — runners share bandwidth).
+      - uses: nix-community/cache-nix-action@v7
+        with:
+          primary-key: nix-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('flake.nix', 'flake.lock') }}
+          restore-prefixes-first-match: nix-${{ runner.os }}-${{ runner.arch }}-
 
       # Explicit restore/save (not the combined action): an EXACT key hit
       # means the switch matches gitter.opam bit-for-bit, so bootstrap can
@@ -28,10 +36,10 @@ jobs:
         id: opam-cache
         with:
           path: ~/.opam
-          key: opam-v2-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('gitter.opam', 'scripts/bootstrap', 'flake.lock') }}
+          key: opam-v3-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('gitter.opam', 'scripts/bootstrap', 'flake.lock') }}
           restore-keys: |
+            opam-v3-${{ runner.os }}-${{ runner.arch }}-
             opam-v2-${{ runner.os }}-${{ runner.arch }}-
-            opam-${{ runner.os }}-${{ runner.arch }}-
 
       - name: bootstrap opam switch
         if: steps.opam-cache.outputs.cache-hit != 'true'
@@ -39,18 +47,13 @@ jobs:
 
       - name: prune opam cache
         if: steps.opam-cache.outputs.cache-hit != 'true'
-        # source tarballs and logs bloat the archive; every future run
-        # pays for them in restore time
-        run: rm -rf ~/.opam/download-cache ~/.opam/log
+        run: ./scripts/ci-prune-opam
 
       - uses: actions/cache/save@v4
         if: steps.opam-cache.outputs.cache-hit != 'true'
         with:
           path: ~/.opam
-          key: opam-v2-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('gitter.opam', 'scripts/bootstrap', 'flake.lock') }}
+          key: opam-v3-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('gitter.opam', 'scripts/bootstrap', 'flake.lock') }}
 
-      - name: build
-        run: nix develop path:. -c dune build
-
-      - name: test
-        run: nix develop path:. -c dune build @runtest
+      - name: build and test
+        run: nix develop path:.#ci -c dune build bin/main.exe @runtest

@@ -1,0 +1,37 @@
+#!/usr/bin/env bash
+# CI ONLY — trims the opam root to what warm builds actually read before it
+# is cached. Cuts the cache archive roughly in half, and every compressed
+# GB costs ~40s of restore on macOS runners. DO NOT run on a dev machine:
+# it deletes merlin data (.cmt/.cmti), the bytecode world (.cma), package
+# sources, and standalone tools (utop, ocamllsp, ocamldebug, ...).
+set -euo pipefail
+
+if [ -z "${CI:-}" ]; then
+  echo "refusing to run outside CI (this guts the switch for caching)" >&2
+  exit 1
+fi
+
+root="$HOME/.opam"
+sw="$root/5.2.0+ox"
+
+rm -rf "$root/download-cache" "$root/log" \
+  "$sw/.opam-switch/sources" "$sw/.opam-switch/backup" \
+  "$sw/man" "$sw/doc"
+
+# merlin artifacts and bytecode archives: CI compiles/links native only
+find "$sw/lib" \( -name '*.cmt' -o -name '*.cmti' -o -name '*.cma' -o -name '*.cmo' \) -delete
+
+# fat bytecode fallbacks — only where a native .opt sibling exists (plain
+# ocamlc/ocamlopt are symlinks to .opt; bytecode-only tools like a
+# potential ocamlmklib.byte survive)
+for b in "$sw"/bin/*.byte; do
+  o="${b%.byte}.opt"
+  [ -x "$o" ] && rm -f "$b"
+done
+
+# standalone tools no dune build invokes
+rm -f "$sw"/bin/ocamldebug "$sw"/bin/ocamllsp "$sw"/bin/ocamlmerlin* \
+  "$sw"/bin/ocaml "$sw"/bin/utop* "$sw"/bin/odoc
+
+echo "pruned opam root:"
+du -sh "$root" 2>/dev/null || true

@@ -52,3 +52,8 @@ For the record, resolved in the tech-debt sweep:
   the stripped binary is still ~80M (14 vendored tree-sitter grammars —
   candidates for size work); no degradation story for non-truecolor
   terminals (Terminal.app).
+- CI warm runs plateau at ~2:20 (range 2:00-2:55 with runner luck):
+  ~80s is GitHub-cache transfer on macOS runners (~22MB/s for the 1.1G
+  opam + nix-store archives), ~40-65s is the full compile on a shared
+  3-core M1. Sub-minute needs paid larger runners or a self-hosted mac;
+  not worth it today.

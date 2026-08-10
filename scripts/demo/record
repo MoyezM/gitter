@@ -56,10 +56,16 @@ gitter="$root/_build/default/bin/main.exe"
 echo "== generating fixture repo"
 ./scripts/demo/fixture "$work/repo" >/dev/null
 
+# An empty HOME for the recording. The tape's shell-overlay beat runs $SHELL,
+# which would otherwise source the operator's rc files and put their prompt,
+# aliases and directory names on camera.
+mkdir -p "$work/home"
+
 # vhs resolves Output paths against its working directory, and the tape has
 # no variables of its own — so render a concrete copy per run.
 sed -e "s|@GITTER@|$gitter|g" \
     -e "s|@REPO@|$work/repo|g" \
+    -e "s|@HOME@|$work/home|g" \
     -e "s|@OUT@|$work/$tape_name|g" \
     "$tape" > "$work/$tape_name.tape"
 
@@ -76,19 +82,24 @@ frames="$work/$tape_name.txt"
 # captured frames, and the FINAL frame must be the review layout (the take
 # is only good if it got all the way to the end).
 fail=0
+# needle|description, separated by | because some needles contain a colon
 want_anywhere=(
-  "Staged:the staged section rendered"
-  "Changes:the unstaged section rendered"
-  "Diff:the diff pane rendered"
-  "Space:the which-key menu opened"
-  "Stack:the stack pane appeared"
-  "Committed:the committed section appeared"
-  "feat/window-engine:the checked-out branch showed in the stack"
-  "feat/parse-errors:the parent branch showed in the stack"
+  "Staged|the staged section rendered"
+  "Changes|the unstaged section rendered"
+  "Stack|the stack pane appeared"
+  "Committed|the committed section appeared"
+  "feat/window-engine|the checked-out branch showed in the stack"
+  "feat/parse-errors|the parent branch showed in the stack"
+  "needs restack|the stale-parent state was on screen"
+  "MAX_BUCKETS|the Python diff rendered"
+  "quantile|the Rust diff rendered"
+  "values.reduce|the TypeScript diff rendered"
+  "bash-|the shell overlay opened"
+  "telemetry: ingest|the shell ran a real git command"
 )
 for entry in "${want_anywhere[@]}"; do
-  needle="${entry%%:*}"
-  what="${entry#*:}"
+  needle="${entry%%|*}"
+  what="${entry#*|}"
   if ! grep -qF -- "$needle" "$frames"; then
     printf 'FAIL: %s (no %q in any frame)\n' "$what" "$needle" >&2
     fail=1
@@ -101,13 +112,14 @@ done
 last_frame="$(awk '{ buf = buf $0 "\n" } / gitter /{ last = buf; buf = "" } END { printf "%s", last }' "$frames")"
 
 want_final=(
-  "Committed vs main:the review was re-based onto the trunk"
-  "Stack:the stack pane is still on screen"
-  $'✓:a file is marked reviewed'
+  "Committed vs main|the review was re-based onto the trunk"
+  "Stack|the stack pane is still on screen"
+  "values.reduce|the TypeScript diff is the closing frame"
+  $'✓|a file is marked reviewed'
 )
 for entry in "${want_final[@]}"; do
-  needle="${entry%%:*}"
-  what="${entry#*:}"
+  needle="${entry%%|*}"
+  what="${entry#*|}"
   case "$last_frame" in
     *"$needle"*) ;;
     *) printf 'FAIL: final frame — %s\n' "$what" >&2; fail=1 ;;

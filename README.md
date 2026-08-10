@@ -3,6 +3,12 @@
 A git TUI built with [bonsai_term](https://github.com/janestreet/bonsai_term)
 (Jane Street's Bonsai for terminals). See `SPEC.md` for the product spec.
 
+![gitter](docs/demo/hero.gif)
+
+Stage files and individual hunks, then flip to review mode: the branch stack
+inferred from git alone, the diff of your branch against any base in it, and
+per-file reviewed marks keyed on content so they survive a restack.
+
 ## Install
 
 macOS (Apple Silicon):

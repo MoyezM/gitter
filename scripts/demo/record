@@ -1,0 +1,142 @@
+#!/usr/bin/env bash
+# Record the README demo GIF, unattended and repeatably.
+#
+#   scripts/demo/record [--tape hero] [--out docs/demo/hero.gif] [--keep]
+#
+#   --tape <name>  tape in scripts/demo/<name>.tape (default: hero)
+#   --out <path>   where the .gif lands (default: docs/demo/<name>.gif)
+#   --keep         leave the fixture repo and raw frames behind for debugging
+#
+# Pipeline: build the binary -> generate a throwaway fixture repo ->
+# substitute paths into the tape -> vhs -> ASSERT the captured frames.
+#
+# That last step is the point. A vhs tape is open loop: it fires keystrokes
+# on a timer at a UI whose panes fill in asynchronously from git. If a fetch
+# is slow the recording still "succeeds" and produces a GIF of a half-drawn
+# screen. So we also capture the frames as text and check the beats actually
+# landed — a bad take fails here instead of on the README.
+set -euo pipefail
+
+root="$(cd "$(dirname "$0")/../.." && pwd)"
+cd "$root"
+
+tape_name=hero
+out=""
+keep=0
+
+die() { printf 'error: %s\n' "$1" >&2; exit 1; }
+
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --tape) [ $# -ge 2 ] || die "--tape needs an argument"; tape_name="$2"; shift 2 ;;
+    --out)  [ $# -ge 2 ] || die "--out needs an argument";  out="$2"; shift 2 ;;
+    --keep) keep=1; shift ;;
+    -h|--help) awk 'NR > 1 && /^#/ { sub(/^# ?/, ""); print; next } NR > 1 { exit }' "$0"; exit 0 ;;
+    *) die "unknown option: $1 (try --help)" ;;
+  esac
+done
+
+tape="scripts/demo/$tape_name.tape"
+[ -f "$tape" ] || die "no such tape: $tape"
+[ -n "$out" ] || out="docs/demo/$tape_name.gif"
+
+command -v vhs >/dev/null \
+  || die "vhs not found — enter the dev shell (nix develop / direnv allow)"
+
+work="$(mktemp -d)"
+cleanup() { [ "$keep" -eq 1 ] || rm -rf "$work"; }
+trap cleanup EXIT
+
+echo "== building the app"
+nix develop path:.#ci -c dune build --root . --profile release bin/main.exe 2>&1 \
+  | grep -vE 'ld: warning|built for newer' || true
+gitter="$root/_build/default/bin/main.exe"
+[ -x "$gitter" ] || die "build produced no binary at $gitter"
+
+echo "== generating fixture repo"
+./scripts/demo/fixture "$work/repo" >/dev/null
+
+# vhs resolves Output paths against its working directory, and the tape has
+# no variables of its own — so render a concrete copy per run.
+sed -e "s|@GITTER@|$gitter|g" \
+    -e "s|@REPO@|$work/repo|g" \
+    -e "s|@OUT@|$work/$tape_name|g" \
+    "$tape" > "$work/$tape_name.tape"
+
+echo "== recording"
+( cd "$work" && vhs "$work/$tape_name.tape" ) >/dev/null
+
+gif="$work/$tape_name.gif"
+frames="$work/$tape_name.txt"
+[ -f "$gif" ] || die "vhs produced no gif"
+[ -f "$frames" ] || die "vhs produced no frame capture"
+
+# ---- assertions ----------------------------------------------------------
+# Every beat the tape claims to demonstrate must show up somewhere in the
+# captured frames, and the FINAL frame must be the review layout (the take
+# is only good if it got all the way to the end).
+fail=0
+want_anywhere=(
+  "Staged:the staged section rendered"
+  "Changes:the unstaged section rendered"
+  "Diff:the diff pane rendered"
+  "Space:the which-key menu opened"
+  "Stack:the stack pane appeared"
+  "Committed:the committed section appeared"
+  "feat/window-engine:the checked-out branch showed in the stack"
+  "feat/parse-errors:the parent branch showed in the stack"
+)
+for entry in "${want_anywhere[@]}"; do
+  needle="${entry%%:*}"
+  what="${entry#*:}"
+  if ! grep -qF -- "$needle" "$frames"; then
+    printf 'FAIL: %s (no %q in any frame)\n' "$what" "$needle" >&2
+    fail=1
+  fi
+done
+
+# The frame a reader's eye rests on. vhs appends frames back to back and
+# every frame ends with the status bar, so flush on that line and keep the
+# last complete one.
+last_frame="$(awk '{ buf = buf $0 "\n" } / gitter /{ last = buf; buf = "" } END { printf "%s", last }' "$frames")"
+
+want_final=(
+  "Committed vs main:the review was re-based onto the trunk"
+  "Stack:the stack pane is still on screen"
+  $'✓:a file is marked reviewed'
+)
+for entry in "${want_final[@]}"; do
+  needle="${entry%%:*}"
+  what="${entry#*:}"
+  case "$last_frame" in
+    *"$needle"*) ;;
+    *) printf 'FAIL: final frame — %s\n' "$what" >&2; fail=1 ;;
+  esac
+done
+
+# An empty diff pane at the end means a fetch never resolved, which is the
+# exact failure a blind tape hides.
+case "$last_frame" in
+  *"no file selected"*)
+    echo 'FAIL: final frame — diff pane is empty (a git fetch did not land in time)' >&2
+    fail=1
+    ;;
+esac
+
+if [ "$fail" -ne 0 ]; then
+  echo "recording rejected — frames kept at $frames" >&2
+  keep=1
+  exit 1
+fi
+
+mkdir -p "$(dirname "$out")"
+cp "$gif" "$out"
+
+bytes="$(wc -c < "$out" | tr -d ' ')"
+printf '\nrecorded: %s (%s MB)\n' "$out" "$(echo "scale=1; $bytes/1048576" | bc | sed "s/^\./0./")"
+[ "$keep" -eq 1 ] && printf 'frames kept: %s\n' "$frames"
+# A README GIF much past this stops being worth the bytes; warn, don't fail.
+if [ "$bytes" -gt 12582912 ]; then
+  printf 'warning: over 12 MB — consider trimming the tape or shrinking the viewport\n' >&2
+fi
+exit 0

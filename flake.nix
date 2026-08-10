@@ -98,6 +98,12 @@
             python3
             # editor used by the pty integration tests
             vim
+            # scripts/demo/record — vhs drives the app through ttyd and
+            # encodes with ffmpeg. Dev shell only: CI never records, and
+            # this closure is far too heavy to make warm builds pay for it.
+            vhs
+            ttyd
+            ffmpeg
           ];
 
           shellHook = ''

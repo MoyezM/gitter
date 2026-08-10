@@ -3,11 +3,14 @@
 A git TUI built with [bonsai_term](https://github.com/janestreet/bonsai_term)
 (Jane Street's Bonsai for terminals). See `SPEC.md` for the product spec.
 
-![gitter](docs/demo/hero.gif)
+<!-- Recorded at 2x by scripts/demo/record; width halves it back so it stays
+     sharp on HiDPI instead of being resampled by the browser. -->
+<img src="docs/demo/hero.gif" alt="gitter" width="896">
 
-Stage files and individual hunks, then flip to review mode: the branch stack
-inferred from git alone, the diff of your branch against any base in it, and
-per-file reviewed marks keyed on content so they survive a restack.
+Stage files and individual hunks, drop into a shell without leaving the app,
+then flip to review mode: the branch stack inferred from git alone (including
+which branch needs a restack), the diff of your branch against any base in it,
+and per-file reviewed marks keyed on content so they survive a restack.
 
 ## Install
 

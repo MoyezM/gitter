@@ -16,12 +16,21 @@
 # inference reads REFLOGS to re-associate a child with an amended parent
 # (see TECH_DEBT.md), and a fixture assembled with `git update-ref` has no
 # reflog, so the stack pane would record as a flat pile of trunk children.
+#
+# Shape the recording depends on:
+#   - the branch stack is 3 deep, checked out in the MIDDLE, so the stack
+#     pane shows branches both above and below the checkout
+#   - the parent branch is amended LAST, which is what makes its child read
+#     "needs restack" — gitter derives that from git alone
+#   - committing against the trunk touches Rust, Python AND TypeScript, so
+#     the diff pane can show three different highlight palettes
+#   - one commit adds a deliberately long block, to have something worth
+#     scrolling through
 set -euo pipefail
 
 dest="${1:?usage: scripts/demo/fixture <dir>}"
 
-# Fixed clock. Each commit advances by a minute so ordering is stable and
-# relative dates ("2 minutes ago") don't wobble between runs.
+# Fixed clock. Each commit advances by a minute so ordering is stable.
 EPOCH=1754400000 # 2025-08-05T14:40:00Z
 tick=0
 stamp() {
@@ -37,11 +46,17 @@ export GIT_COMMITTER_NAME='Ada Lovelace'
 export GIT_COMMITTER_EMAIL='ada@example.com'
 
 commit() {
-  local msg="$1"
   local when
   when="$(stamp)"
   GIT_AUTHOR_DATE="$when" GIT_COMMITTER_DATE="$when" \
-    git -C "$dest" commit --quiet --no-gpg-sign -m "$msg"
+    git -C "$dest" commit --quiet --no-gpg-sign -m "$1"
+}
+
+amend() {
+  local when
+  when="$(stamp)"
+  GIT_AUTHOR_DATE="$when" GIT_COMMITTER_DATE="$when" \
+    git -C "$dest" commit --quiet --no-gpg-sign --amend -m "$1"
 }
 
 rm -rf "$dest"
@@ -52,20 +67,12 @@ git -C "$dest" config user.email "$GIT_AUTHOR_EMAIL"
 git -C "$dest" config commit.gpgsign false
 
 # ---------------------------------------------------------------- main ----
-# A small plausible project. Languages are chosen for vendored grammars
-# (python, typescript, rust, toml, markdown) so highlighting has something
-# to show — placeholder files would record as a wall of default foreground.
-
 mkdir -p "$dest/src" "$dest/web" "$dest/engine"
 
 cat > "$dest/README.md" <<'EOF'
 # telemetry
 
 Ingests structured events, rolls them into windows, serves them back.
-
-- `src/` — Python ingest + rollup
-- `engine/` — Rust window engine
-- `web/` — TypeScript client
 EOF
 
 cat > "$dest/pyproject.toml" <<'EOF'
@@ -170,24 +177,12 @@ export async function fetchSeries(name: string, since: number): Promise<Series> 
   }
   return (await res.json()) as Series;
 }
-
-export function bucket(points: Series["points"], width = DEFAULT_WINDOW) {
-  const out = new Map<number, number[]>();
-  for (const p of points) {
-    const key = p.at - (p.at % width);
-    out.set(key, [...(out.get(key) ?? []), p.value]);
-  }
-  return out;
-}
 EOF
 
 git -C "$dest" add -A
 commit "telemetry: ingest, rollup, window engine"
 
-# --------------------------------------------------------------- stack ----
-# main -> feat/parse-errors -> feat/window-engine -> feat/cli
-# Checked out and committed for real, so each branch gets a reflog.
-
+# ------------------------------------------------ branch: parse-errors ----
 git -C "$dest" checkout --quiet -b feat/parse-errors
 cat > "$dest/src/errors.py" <<'EOF'
 """Typed ingest failures, so a bad line names itself."""
@@ -196,18 +191,32 @@ cat > "$dest/src/errors.py" <<'EOF'
 class IngestError(Exception):
     """Base for anything that goes wrong parsing an event."""
 
+    def __init__(self, message: str, *, raw: str):
+        super().__init__(message)
+        self.raw = raw
+
 
 class MalformedLine(IngestError):
+    """The line did not split into the four expected fields."""
+
     def __init__(self, raw: str):
-        super().__init__(f"malformed event line: {raw!r}")
-        self.raw = raw
+        super().__init__(f"malformed event line: {raw!r}", raw=raw)
 
 
 class BadTimestamp(IngestError):
+    """The timestamp field was present but not an integer."""
+
     def __init__(self, raw: str, at: str):
-        super().__init__(f"bad timestamp {at!r} in {raw!r}")
-        self.raw = raw
+        super().__init__(f"bad timestamp {at!r} in {raw!r}", raw=raw)
         self.at = at
+
+
+class BadValue(IngestError):
+    """The value field was present but not a float."""
+
+    def __init__(self, raw: str, value: str):
+        super().__init__(f"bad value {value!r} in {raw!r}", raw=raw)
+        self.value = value
 EOF
 git -C "$dest" add -A
 commit "ingest: typed errors for malformed lines"
@@ -218,7 +227,7 @@ p = sys.argv[1]
 s = open(p).read()
 s = s.replace(
     'from typing import Iterable, Iterator',
-    'from typing import Iterable, Iterator\n\nfrom .errors import BadTimestamp, MalformedLine')
+    'from typing import Iterable, Iterator\n\nfrom .errors import BadTimestamp, BadValue, MalformedLine')
 s = s.replace(
     '''def parse(raw: str) -> Event:
     source, name, value, at = raw.split("|", 3)
@@ -232,13 +241,20 @@ s = s.replace(
         stamp = int(at)
     except ValueError:
         raise BadTimestamp(raw, at) from None
-    return Event(source=source, name=name, value=float(value), at=stamp)''')
+    try:
+        reading = float(value)
+    except ValueError:
+        raise BadValue(raw, value) from None
+    return Event(source=source, name=name, value=reading, at=stamp)''')
 open(p, 'w').write(s)
 PY
 git -C "$dest" add -A
 commit "ingest: raise typed errors from parse"
 
+# ----------------------------------------------- branch: window-engine ----
 git -C "$dest" checkout --quiet -b feat/window-engine
+
+# A deliberately long addition: this is the hunk the recording scrolls.
 python3 - "$dest/engine/window.rs" <<'PY'
 import sys
 p = sys.argv[1]
@@ -254,12 +270,37 @@ s = s.replace('''    pub fn mean(&self, at: u64) -> Option<f64> {
         Some(values.iter().sum::<f64>() / values.len() as f64)
     }
 
-    /// Drop every bucket that closed before `cutoff`.
+    /// Drop every bucket that closed before `cutoff`, returning how many
+    /// went. Buckets are keyed by start time, so a split is enough.
     pub fn evict(&mut self, cutoff: u64) -> usize {
         let keep = self.buckets.split_off(&cutoff);
         let dropped = self.buckets.len();
         self.buckets = keep;
         dropped
+    }
+
+    /// Every bucket start in `[from, to)`, oldest first.
+    pub fn range(&self, from: u64, to: u64) -> impl Iterator<Item = (&u64, &Vec<f64>)> {
+        self.buckets.range(from..to)
+    }
+
+    /// Nearest-rank quantile across one bucket. `q` is clamped to [0, 1].
+    pub fn quantile(&self, at: u64, q: f64) -> Option<f64> {
+        let key = at - (at % self.width);
+        let values = self.buckets.get(&key)?;
+        if values.is_empty() {
+            return None;
+        }
+        let mut sorted = values.clone();
+        sorted.sort_by(|a, b| a.partial_cmp(b).unwrap());
+        let q = q.clamp(0.0, 1.0);
+        let rank = ((sorted.len() - 1) as f64 * q).round() as usize;
+        Some(sorted[rank])
+    }
+
+    /// Total readings held across every open bucket.
+    pub fn weight(&self) -> usize {
+        self.buckets.values().map(Vec::len).sum()
     }
 
     pub fn len(&self) -> usize {
@@ -268,8 +309,35 @@ s = s.replace('''    pub fn mean(&self, at: u64) -> Option<f64> {
 open(p, 'w').write(s)
 PY
 git -C "$dest" add -A
-commit "engine: evict closed buckets"
+commit "engine: evict, range, quantile"
 
+# A TypeScript commit too, so the committed diff spans three languages.
+python3 - "$dest/web/client.ts" <<'PY'
+import sys
+p = sys.argv[1]
+s = open(p).read()
+s += '''
+export function summarize(series: Series, width = DEFAULT_WINDOW) {
+  const buckets = new Map<number, number[]>();
+  for (const point of series.points) {
+    const key = point.at - (point.at % width);
+    buckets.set(key, [...(buckets.get(key) ?? []), point.value]);
+  }
+  return [...buckets.entries()]
+    .sort(([a], [b]) => a - b)
+    .map(([at, values]) => ({
+      at,
+      mean: values.reduce((sum, v) => sum + v, 0) / values.length,
+      count: values.length,
+    }));
+}
+'''
+open(p, 'w').write(s)
+PY
+git -C "$dest" add -A
+commit "web: summarize a series into windows"
+
+# --------------------------------------------------------- branch: cli ----
 git -C "$dest" checkout --quiet -b feat/cli
 cat > "$dest/src/cli.py" <<'EOF'
 """Command line entry point: read events, print rolled-up windows."""
@@ -296,10 +364,23 @@ EOF
 git -C "$dest" add -A
 commit "cli: roll up stdin and print windows"
 
-# ------------------------------------------------------- working tree ----
-# Land on the middle of the stack so the stack pane has branches both above
-# and below the checkout, then dirty the tree: staged, unstaged, untracked.
+# ------------------------------------------------- stale the parent ------
+# Amend feat/parse-errors AFTER its child exists. The child still sits on
+# the old tip, so gitter reports it as needing a restack — inferred from
+# git alone, which is the point. The reflog keeps the association intact.
+git -C "$dest" checkout --quiet feat/parse-errors
+python3 - "$dest/src/errors.py" <<'PY'
+import sys
+p = sys.argv[1]
+s = open(p).read()
+s = s.replace('"""Typed ingest failures, so a bad line names itself."""',
+              '"""Typed ingest failures, so a bad line names itself.\n\nEvery error carries the offending line as `.raw`.\n"""')
+open(p, 'w').write(s)
+PY
+git -C "$dest" add -A
+amend "ingest: raise typed errors from parse"
 
+# ------------------------------------------------------- working tree ----
 git -C "$dest" checkout --quiet feat/window-engine
 
 # staged
@@ -319,13 +400,13 @@ open(p, 'w').write(s)
 PY
 git -C "$dest" add engine/window.rs
 
-# unstaged, on top of the staged edit — the same file in both sections
+# unstaged, same file — so it shows in Staged AND Changes at once
 python3 - "$dest/engine/window.rs" <<'PY'
 import sys
 p = sys.argv[1]
 s = open(p).read()
 s = s.replace('//! Sliding window accumulator over the event stream.',
-              '//! Sliding window accumulator over the event stream.\n//!\n//! Buckets are evicted once they close; see `evict`.')
+              '//! Sliding window accumulator over the event stream.\n//!\n//! Buckets are evicted once they close; see [`Window::evict`].')
 open(p, 'w').write(s)
 PY
 

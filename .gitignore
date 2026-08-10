@@ -3,3 +3,4 @@ _build-verify/
 dist/
 .direnv/
 gitter.install
+.DS_Store

@@ -1,0 +1,369 @@
+#!/usr/bin/env bash
+# Build the throwaway repo the README recording is driven against.
+#
+#   scripts/demo/fixture <dir>
+#
+# Deterministic on purpose: the recording is a build artifact, so the same
+# fixture must come out byte-identical every run. That means
+#   - pinned author/committer identity AND dates (the stack pane orders
+#     siblings by committerdate, so drifting dates reorder the demo)
+#   - GIT_CONFIG_GLOBAL=/dev/null, so the operator's signing key, hooks,
+#     templates and aliases cannot reach in
+#   - no network, no submodules, no LFS
+#
+# The stack is built by actually checking out and committing on each branch
+# rather than by plumbing refs into place. That is not incidental: stack
+# inference reads REFLOGS to re-associate a child with an amended parent
+# (see TECH_DEBT.md), and a fixture assembled with `git update-ref` has no
+# reflog, so the stack pane would record as a flat pile of trunk children.
+set -euo pipefail
+
+dest="${1:?usage: scripts/demo/fixture <dir>}"
+
+# Fixed clock. Each commit advances by a minute so ordering is stable and
+# relative dates ("2 minutes ago") don't wobble between runs.
+EPOCH=1754400000 # 2025-08-05T14:40:00Z
+tick=0
+stamp() {
+  tick=$((tick + 60))
+  echo "$((EPOCH + tick)) +0000"
+}
+
+export GIT_CONFIG_GLOBAL=/dev/null
+export GIT_CONFIG_SYSTEM=/dev/null
+export GIT_AUTHOR_NAME='Ada Lovelace'
+export GIT_AUTHOR_EMAIL='ada@example.com'
+export GIT_COMMITTER_NAME='Ada Lovelace'
+export GIT_COMMITTER_EMAIL='ada@example.com'
+
+commit() {
+  local msg="$1"
+  local when
+  when="$(stamp)"
+  GIT_AUTHOR_DATE="$when" GIT_COMMITTER_DATE="$when" \
+    git -C "$dest" commit --quiet --no-gpg-sign -m "$msg"
+}
+
+rm -rf "$dest"
+mkdir -p "$dest"
+git -C "$dest" init --quiet --initial-branch=main
+git -C "$dest" config user.name "$GIT_AUTHOR_NAME"
+git -C "$dest" config user.email "$GIT_AUTHOR_EMAIL"
+git -C "$dest" config commit.gpgsign false
+
+# ---------------------------------------------------------------- main ----
+# A small plausible project. Languages are chosen for vendored grammars
+# (python, typescript, rust, toml, markdown) so highlighting has something
+# to show — placeholder files would record as a wall of default foreground.
+
+mkdir -p "$dest/src" "$dest/web" "$dest/engine"
+
+cat > "$dest/README.md" <<'EOF'
+# telemetry
+
+Ingests structured events, rolls them into windows, serves them back.
+
+- `src/` — Python ingest + rollup
+- `engine/` — Rust window engine
+- `web/` — TypeScript client
+EOF
+
+cat > "$dest/pyproject.toml" <<'EOF'
+[project]
+name = "telemetry"
+version = "0.4.1"
+requires-python = ">=3.11"
+dependencies = ["httpx>=0.27", "pydantic>=2.6"]
+
+[tool.ruff]
+line-length = 96
+target-version = "py311"
+EOF
+
+cat > "$dest/src/ingest.py" <<'EOF'
+"""Event ingest: parse, validate, hand off to the rollup engine."""
+
+from dataclasses import dataclass
+from typing import Iterable, Iterator
+
+
+@dataclass(frozen=True)
+class Event:
+    source: str
+    name: str
+    value: float
+    at: int
+
+
+def parse(raw: str) -> Event:
+    source, name, value, at = raw.split("|", 3)
+    return Event(source=source, name=name, value=float(value), at=int(at))
+
+
+def read_all(lines: Iterable[str]) -> Iterator[Event]:
+    for line in lines:
+        line = line.strip()
+        if not line or line.startswith("#"):
+            continue
+        yield parse(line)
+EOF
+
+cat > "$dest/src/rollup.py" <<'EOF'
+"""Fixed-width tumbling windows over a stream of events."""
+
+from collections import defaultdict
+
+WINDOW_SECONDS = 60
+
+
+def window_of(at: int) -> int:
+    return at - (at % WINDOW_SECONDS)
+
+
+def rollup(events):
+    buckets = defaultdict(list)
+    for event in events:
+        buckets[(event.name, window_of(event.at))].append(event.value)
+    return {key: sum(values) / len(values) for key, values in buckets.items()}
+EOF
+
+cat > "$dest/engine/window.rs" <<'EOF'
+//! Sliding window accumulator over the event stream.
+
+use std::collections::BTreeMap;
+
+pub struct Window {
+    width: u64,
+    buckets: BTreeMap<u64, Vec<f64>>,
+}
+
+impl Window {
+    pub fn new(width: u64) -> Self {
+        Window { width, buckets: BTreeMap::new() }
+    }
+
+    pub fn push(&mut self, at: u64, value: f64) {
+        let key = at - (at % self.width);
+        self.buckets.entry(key).or_default().push(value);
+    }
+
+    pub fn mean(&self, at: u64) -> Option<f64> {
+        let key = at - (at % self.width);
+        let values = self.buckets.get(&key)?;
+        Some(values.iter().sum::<f64>() / values.len() as f64)
+    }
+}
+EOF
+
+cat > "$dest/web/client.ts" <<'EOF'
+export interface Series {
+  name: string;
+  points: Array<{ at: number; value: number }>;
+}
+
+const DEFAULT_WINDOW = 60_000;
+
+export async function fetchSeries(name: string, since: number): Promise<Series> {
+  const res = await fetch(`/api/series/${encodeURIComponent(name)}?since=${since}`);
+  if (!res.ok) {
+    throw new Error(`series ${name}: ${res.status}`);
+  }
+  return (await res.json()) as Series;
+}
+
+export function bucket(points: Series["points"], width = DEFAULT_WINDOW) {
+  const out = new Map<number, number[]>();
+  for (const p of points) {
+    const key = p.at - (p.at % width);
+    out.set(key, [...(out.get(key) ?? []), p.value]);
+  }
+  return out;
+}
+EOF
+
+git -C "$dest" add -A
+commit "telemetry: ingest, rollup, window engine"
+
+# --------------------------------------------------------------- stack ----
+# main -> feat/parse-errors -> feat/window-engine -> feat/cli
+# Checked out and committed for real, so each branch gets a reflog.
+
+git -C "$dest" checkout --quiet -b feat/parse-errors
+cat > "$dest/src/errors.py" <<'EOF'
+"""Typed ingest failures, so a bad line names itself."""
+
+
+class IngestError(Exception):
+    """Base for anything that goes wrong parsing an event."""
+
+
+class MalformedLine(IngestError):
+    def __init__(self, raw: str):
+        super().__init__(f"malformed event line: {raw!r}")
+        self.raw = raw
+
+
+class BadTimestamp(IngestError):
+    def __init__(self, raw: str, at: str):
+        super().__init__(f"bad timestamp {at!r} in {raw!r}")
+        self.raw = raw
+        self.at = at
+EOF
+git -C "$dest" add -A
+commit "ingest: typed errors for malformed lines"
+
+python3 - "$dest/src/ingest.py" <<'PY'
+import sys
+p = sys.argv[1]
+s = open(p).read()
+s = s.replace(
+    'from typing import Iterable, Iterator',
+    'from typing import Iterable, Iterator\n\nfrom .errors import BadTimestamp, MalformedLine')
+s = s.replace(
+    '''def parse(raw: str) -> Event:
+    source, name, value, at = raw.split("|", 3)
+    return Event(source=source, name=name, value=float(value), at=int(at))''',
+    '''def parse(raw: str) -> Event:
+    parts = raw.split("|", 3)
+    if len(parts) != 4:
+        raise MalformedLine(raw)
+    source, name, value, at = parts
+    try:
+        stamp = int(at)
+    except ValueError:
+        raise BadTimestamp(raw, at) from None
+    return Event(source=source, name=name, value=float(value), at=stamp)''')
+open(p, 'w').write(s)
+PY
+git -C "$dest" add -A
+commit "ingest: raise typed errors from parse"
+
+git -C "$dest" checkout --quiet -b feat/window-engine
+python3 - "$dest/engine/window.rs" <<'PY'
+import sys
+p = sys.argv[1]
+s = open(p).read()
+s = s.replace('''    pub fn mean(&self, at: u64) -> Option<f64> {
+        let key = at - (at % self.width);
+        let values = self.buckets.get(&key)?;
+        Some(values.iter().sum::<f64>() / values.len() as f64)
+    }''',
+'''    pub fn mean(&self, at: u64) -> Option<f64> {
+        let key = at - (at % self.width);
+        let values = self.buckets.get(&key)?;
+        Some(values.iter().sum::<f64>() / values.len() as f64)
+    }
+
+    /// Drop every bucket that closed before `cutoff`.
+    pub fn evict(&mut self, cutoff: u64) -> usize {
+        let keep = self.buckets.split_off(&cutoff);
+        let dropped = self.buckets.len();
+        self.buckets = keep;
+        dropped
+    }
+
+    pub fn len(&self) -> usize {
+        self.buckets.len()
+    }''')
+open(p, 'w').write(s)
+PY
+git -C "$dest" add -A
+commit "engine: evict closed buckets"
+
+git -C "$dest" checkout --quiet -b feat/cli
+cat > "$dest/src/cli.py" <<'EOF'
+"""Command line entry point: read events, print rolled-up windows."""
+
+import argparse
+import sys
+
+from .ingest import read_all
+from .rollup import rollup
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(prog="telemetry")
+    parser.add_argument("--window", type=int, default=60, help="window width, seconds")
+    parser.add_argument("--quiet", action="store_true")
+    args = parser.parse_args(argv)
+
+    windows = rollup(read_all(sys.stdin))
+    if not args.quiet:
+        for (name, start), mean in sorted(windows.items()):
+            print(f"{start}\t{name}\t{mean:.3f}")
+    return 0
+EOF
+git -C "$dest" add -A
+commit "cli: roll up stdin and print windows"
+
+# ------------------------------------------------------- working tree ----
+# Land on the middle of the stack so the stack pane has branches both above
+# and below the checkout, then dirty the tree: staged, unstaged, untracked.
+
+git -C "$dest" checkout --quiet feat/window-engine
+
+# staged
+python3 - "$dest/engine/window.rs" <<'PY'
+import sys
+p = sys.argv[1]
+s = open(p).read()
+s = s.replace('    pub fn len(&self) -> usize {\n        self.buckets.len()\n    }',
+'''    pub fn len(&self) -> usize {
+        self.buckets.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.buckets.is_empty()
+    }''')
+open(p, 'w').write(s)
+PY
+git -C "$dest" add engine/window.rs
+
+# unstaged, on top of the staged edit — the same file in both sections
+python3 - "$dest/engine/window.rs" <<'PY'
+import sys
+p = sys.argv[1]
+s = open(p).read()
+s = s.replace('//! Sliding window accumulator over the event stream.',
+              '//! Sliding window accumulator over the event stream.\n//!\n//! Buckets are evicted once they close; see `evict`.')
+open(p, 'w').write(s)
+PY
+
+# unstaged, elsewhere
+python3 - "$dest/src/rollup.py" <<'PY'
+import sys
+p = sys.argv[1]
+s = open(p).read()
+s = s.replace('WINDOW_SECONDS = 60',
+              'WINDOW_SECONDS = 60\nMAX_BUCKETS = 10_000')
+s = s.replace('''def rollup(events):
+    buckets = defaultdict(list)''',
+'''def rollup(events, *, limit: int = MAX_BUCKETS):
+    buckets = defaultdict(list)''')
+open(p, 'w').write(s)
+PY
+
+python3 - "$dest/web/client.ts" <<'PY'
+import sys
+p = sys.argv[1]
+s = open(p).read()
+s = s.replace('const DEFAULT_WINDOW = 60_000;',
+              'const DEFAULT_WINDOW = 60_000;\nconst MAX_POINTS = 5_000;')
+open(p, 'w').write(s)
+PY
+
+# untracked
+cat > "$dest/engine/evict_test.rs" <<'EOF'
+use super::Window;
+
+#[test]
+fn evicts_closed_buckets() {
+    let mut w = Window::new(60);
+    w.push(0, 1.0);
+    w.push(60, 2.0);
+    assert_eq!(w.evict(60), 1);
+    assert_eq!(w.len(), 1);
+}
+EOF
+
+echo "fixture ready: $dest (HEAD = $(git -C "$dest" rev-parse --abbrev-ref HEAD))"

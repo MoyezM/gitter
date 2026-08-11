@@ -2,6 +2,16 @@
  (names test_solver test_git test_highlight test_cursor test_tree test_scrollbar
    test_clipboard test_stack test_terminal test_session)
  (libraries async bonsai_term core gitter grammar_registry tree-sitter)
- (link_flags (-cclib -Wl,-w)) ; silence SDK-version ld warning flood
+ (link_flags (:include link_flags.sexp))
  (preprocess
   (pps ppx_jane)))
+
+; Link exactly like the shipped binary — scripts/link-flags computes these
+; and explains each one. Tests MUST get the static archives too on Linux: an ELF
+; records no absolute path for its libraries, and with no nix cc-wrapper in
+; the #ci shell nothing writes an RPATH, so a dynamically linked
+; test_terminal dies at startup with "libvterm.so.0: cannot open shared
+; object file". Mach-O has no such problem — a dylib carries its own
+; install_name — which is why macOS never needed this.
+(rule
+ (copy ../bin/link_flags.sexp link_flags.sexp))

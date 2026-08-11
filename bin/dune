@@ -7,22 +7,17 @@
  (preprocess
   (pps ppx_jane bonsai.ppx_bonsai)))
 
-; Link flags depend on the environment: inside the nix shell
-; $GITTER_STATIC_LIB_DIR points at a directory of ONLY .a archives
-; (libvterm, sqlite3) that must come FIRST on the search path so both
-; link statically — the released binary may not reference /nix/store.
-; -dead_strip_dylibs then drops the unused dylib mentions; -Wl,-w
-; silences the SDK-version ld warning flood.
+; Link flags vary by platform and by whether we are inside the nix dev
+; shell, so they are computed rather than written down. scripts/link-flags
+; explains each flag; test/dune and bench/dune copy the sexp this produces
+; so everything links the same way.
 (rule
  (targets link_flags.sexp)
  (deps (env_var GITTER_STATIC_LIB_DIR))
  (action
   (with-stdout-to
    %{targets}
-   (run
-    bash
-    -c
-    "if [ -n \"${GITTER_STATIC_LIB_DIR:-}\" ] && [ \"$(uname -s)\" = Darwin ]; then printf '(-ccopt -L%s -cclib -Wl,-dead_strip_dylibs -cclib -Wl,-w)' \"$GITTER_STATIC_LIB_DIR\"; else printf '(-cclib -Wl,-w)'; fi"))))
+   (run bash %{dep:../scripts/link-flags}))))
 
 ; Version stamp: releases build with GITTER_VERSION=<tag> in the
 ; environment; anything else reports "dev".

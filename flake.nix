@@ -75,19 +75,28 @@
             fi
           '';
         };
-        default = pkgs.mkShell {
-          packages = with pkgs; [
+        # No nix C toolchain on Linux (mkShellNoCC), deliberately: whatever
+        # compiles the switch's C runtime must be the same toolchain that
+        # later LINKS the binary, and the release link happens in the #ci
+        # shell against the distro's gcc. Build libasmrun.a against nix's
+        # newer glibc instead and it calls __isoc23_strtol/__isoc23_sscanf,
+        # which glibc 2.35 does not define — every link fails with undefined
+        # references. macOS has no such split: nix clang and Apple clang both
+        # target the one system libSystem, so it keeps its full stdenv.
+        default = (if pkgs.stdenv.isDarwin then pkgs.mkShell else pkgs.mkShellNoCC) {
+          packages = (with pkgs; [
             # OCaml bootstrap: the tool only — the switch lives in ~/.opam
             opam
-            # ocamlopt's configured assembler is literally "gcc"; inside the
-            # shell /usr/bin/gcc is an xcrun shim that fails against the nix
-            # SDK, so alias gcc to the shell's clang wrapper
-            (pkgs.writeShellScriptBin "gcc" ''exec ${pkgs.stdenv.cc}/bin/cc "$@"'')
             # native deps of the opam packages (zarith needs gmp; the
             # tree-sitter opam package's build wants autoconf)
             pkg-config
             gmp
             autoconf
+            # oxcaml-compiler's `make install` stages the compiler with rsync.
+            # macOS ships one in /usr/bin so this never surfaced there; a
+            # minimal Linux has none and the compiler build dies at the very
+            # last step (Makefile.common-ox: install, exit 127).
+            rsync
             # sqlite3 opam bindings (review-marks store)
             sqlite
             # embedded-terminal emulator (the shell overlay, lib/terminal/)
@@ -104,7 +113,13 @@
             vhs
             ttyd
             ffmpeg
-          ];
+          ])
+          # ocamlopt's configured assembler is literally "gcc"; on macOS
+          # /usr/bin/gcc is an xcrun shim that fails against the nix SDK, so
+          # alias gcc to the shell's clang wrapper. Linux uses its own gcc,
+          # which is the whole point of the mkShellNoCC above.
+          ++ pkgs.lib.optional pkgs.stdenv.isDarwin
+               (pkgs.writeShellScriptBin "gcc" ''exec ${pkgs.stdenv.cc}/bin/cc "$@"'');
 
           shellHook = ''
             export GITTER_STATIC_LIB_DIR=${static-libs pkgs}/lib

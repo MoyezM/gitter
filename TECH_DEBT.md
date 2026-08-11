@@ -25,7 +25,9 @@ For the record, resolved in the tech-debt sweep:
   positional, so dragged fractions survive pane hiding.
 - **Build noise**: `-Wl,-w` link flag on bin/test/bench (the opam-switch
   objects target a newer macOS SDK than the nix clang links against —
-  cosmetic); vendored grammar C compiles silence upstream
+  cosmetic). Emitted only on macOS: GNU ld has no `-w` and rejects it, so
+  each of the three generates its flags per platform. Vendored grammar C
+  compiles silence upstream
   unused-but-set-variable warnings (scripts/add-grammar emits the flag
   for future grammars too).
 

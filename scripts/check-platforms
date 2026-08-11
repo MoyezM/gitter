@@ -1,0 +1,50 @@
+#!/usr/bin/env bash
+# The published platform list lives in three places that cannot share code:
+#
+#   .github/workflows/release.yml   the matrix that BUILDS the tarballs
+#   scripts/build-release           names the tarball for the current machine
+#   scripts/install.sh              picks which tarball to download
+#
+# install.sh is the reason they cannot be merged: it is fetched on its own and
+# piped to bash, so it can never read another file in this repo. If its naming
+# drifts from the matrix, nothing fails at release time — users just get a 404
+# for an asset that was never built. This turns that into a CI failure.
+#
+# The check is one-directional: everything released must be installable and
+# reproducible locally. install.sh may know about MORE platforms than are
+# published (it maps Darwin-x86_64 so Intel Macs get "no build for you" rather
+# than "unsupported platform"), and that is fine.
+set -euo pipefail
+
+root="$(cd "$(dirname "$0")/.." && pwd)"
+cd "$root"
+
+published=$(grep -oE '^ +platform: [a-z0-9_-]+' .github/workflows/release.yml \
+  | awk '{ print $2 }' | sort -u)
+installable=$(grep -oE 'platform=[a-z0-9_-]+' scripts/install.sh \
+  | cut -d= -f2 | sort -u)
+buildable=$(grep -oE 'platform=[a-z0-9_-]+' scripts/build-release \
+  | cut -d= -f2 | sort -u)
+
+[ -n "$published" ] || { echo "error: no platforms found in release.yml" >&2; exit 1; }
+
+echo "published:   $(echo   "$published"   | tr '\n' ' ')"
+echo "installable: $(echo   "$installable" | tr '\n' ' ')"
+echo "buildable:   $(echo   "$buildable"   | tr '\n' ' ')"
+
+status=0
+for p in $published; do
+  if ! printf '%s\n' "$installable" | grep -qx "$p"; then
+    echo "error: release.yml publishes '$p' but scripts/install.sh never names it" >&2
+    echo "       -> anyone on that platform downloads a 404" >&2
+    status=1
+  fi
+  if ! printf '%s\n' "$buildable" | grep -qx "$p"; then
+    echo "error: release.yml publishes '$p' but scripts/build-release cannot name it" >&2
+    echo "       -> that artifact cannot be reproduced locally" >&2
+    status=1
+  fi
+done
+
+[ "$status" -eq 0 ] && echo "OK: every published platform is installable and reproducible"
+exit "$status"

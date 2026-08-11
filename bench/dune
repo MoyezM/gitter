@@ -1,6 +1,11 @@
 (executable
  (name bench_diff)
  (libraries async core core_unix.command_unix gitter gitter_grammar_c tree-sitter)
- (link_flags (-cclib -Wl,-w)) ; silence SDK-version ld warning flood
+ (link_flags (:include link_flags.sexp))
  (preprocess
   (pps ppx_jane)))
+
+; Same flags as the shipped binary; scripts/link-flags computes them, and
+; test/dune says why the static archives are not optional on Linux.
+(rule
+ (copy ../bin/link_flags.sexp link_flags.sexp))

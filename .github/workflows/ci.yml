@@ -4,6 +4,13 @@
 # because the tree may contain untracked files.
 name: ci
 
+# Least privilege: nothing in this workflow writes to the repo. Paired with
+# persist-credentials: false on every checkout below, which keeps the job's
+# GITHUB_TOKEN out of .git/config — everything after checkout is repo code,
+# and on a fork PR that is code the PR author wrote. Nothing here pushes.
+permissions:
+  contents: read
+
 on:
   push:
     branches: [main]
@@ -26,6 +33,8 @@ jobs:
     timeout-minutes: 120
     steps:
       - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
 
       - uses: nixbuild/nix-quick-install-action@v35
 
@@ -75,6 +84,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
       - run: ./scripts/check-platforms
 
   # The one context branch protection requires (.github/rulesets/main.json).

@@ -32,6 +32,13 @@ fi
 # even though the nix shell already has it on PATH.
 opam option --global depext=false >/dev/null 2>&1 || true
 
+# opam gives its solver 60s by default, which is not enough to resolve this
+# switch: the oxcaml repo's preview packages plus the whole default repo is a
+# big search space, and a cold `--deps-only` solve runs past the limit and
+# aborts with exit 60. Only ever hit on a COLD switch — an existing one solves
+# in seconds — which is why macOS CI, restoring a cached ~/.opam, never saw it.
+export OPAMSOLVERTIMEOUT="${OPAMSOLVERTIMEOUT:-600}"
+
 if opam switch list --short 2>/dev/null | grep -qx "$SWITCH"; then
   echo "== switch $SWITCH already exists"
 else

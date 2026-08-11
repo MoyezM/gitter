@@ -33,6 +33,13 @@ module Model : sig
   val initial : t
 end
 
+module Op : sig
+  type t =
+    | Set_base (* Enter *)
+    | Review of { prefer_origin : bool } (* r: origin-preferred; R: local *)
+  [@@deriving sexp_of]
+end
+
 module Action : sig
   type t =
     | Move of
@@ -50,9 +57,13 @@ module Action : sig
         ; height : int
         }
     | Rows_changed (** the derived rows changed: repair the selection *)
-    | Enter of { height : int }
-        (** set-base on a branch row (host wrapper schedules it at apply
-            time); fold-toggle on a group row *)
+    | Operate of
+        { op : Op.t
+        ; height : int
+        }
+        (** an effectful verb on the selected branch (host wrapper
+            schedules it at apply time — burst-safe); fold-toggle on a
+            group row *)
   [@@deriving sexp_of]
 end
 

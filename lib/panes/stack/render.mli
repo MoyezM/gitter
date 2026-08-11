@@ -14,5 +14,6 @@ val render
   :  status:status
   -> model:State.Model.t
   -> base:string option (** marked "(base)" on its row *)
+  -> review_branch:string option (** marked "(reviewing)" on its row *)
   -> dimensions:Dimensions.t
   -> View.t

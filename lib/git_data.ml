@@ -36,6 +36,41 @@ type diffstat =
   }
 
 let no_diffstat = { staged_lines = String.Map.empty; unstaged_lines = String.Map.empty }
+let no_committed = [], String.Map.empty, String.Map.empty
+
+(* Review mode: an arbitrary branch under review vs its inferred
+   parent, instead of HEAD vs the current branch's parent. The TARGET is
+   what the user chose (a branch + whether origin/<branch> is
+   preferred); the RESOLVED form is what the comparison actually uses
+   after checking which refs exist. *)
+module Review_target = struct
+  type t =
+    | Stack of
+        { branch : string
+        ; prefer_origin : bool
+        } (* the stack pane's r/R: parent inferred, refs resolved *)
+    | Rev of string
+      (* typed into the review prompt: used LITERALLY as the head (the
+         user said exactly what they want), based against the trunk *)
+  [@@deriving equal]
+end
+
+(* What the committed pane compares — the reactive input of the committed
+   fetch (one named spelling; the [@@deriving equal] drives the
+   refetch-on-change cutoff). *)
+module Comparison = struct
+  type t =
+    [ `Self of string option (* the base branch; None = no base known *)
+    | `Review of Review_target.t * string (* target, its parent branch *)
+    ]
+  [@@deriving equal]
+end
+
+type review =
+  { branch : string (* the chosen branch name, for the stack-pane marker *)
+  ; head_ref : string (* origin/<branch> or <branch>, whichever resolved *)
+  ; base_ref : string (* the parent, with the same origin preference *)
+  }
 
 (* One section pane's slice: its visible rows, cursor, scroll override,
    and inject. *)
@@ -64,6 +99,20 @@ type t =
   ; set_base : (string -> unit Effect.t) Bonsai.t
       (* the stack pane's Enter — choosing the current branch clears back
          to the inferred parent *)
+  ; review : review option Bonsai.t
+      (* the resolved review comparison; None = the self view (HEAD vs
+         base) *)
+  ; review_intent : (string * bool) option Bonsai.t
+      (* (branch, prefer_origin) — the UNRESOLVED intent, synchronous
+         with the keypress: drives the stack marker and the app's
+         reveal trigger instantly (the resolved [review] only lands
+         after a fetch, and r->R on one branch changes only the flag) *)
+  ; set_review_target : (branch:string -> prefer_origin:bool -> unit Effect.t) Bonsai.t
+      (* the stack pane's r/R — choosing the same target again clears
+         back to the self view *)
+  ; set_review_rev : (string -> unit Effect.t) Bonsai.t
+      (* the review prompt: any rev, used literally, based against the
+         trunk (same toggle-off-on-repeat semantics) *)
   ; selection : Panes.Diff.Fetch.key option Bonsai.t
       (* the active pane's file, tagged with its side — the diff pane shows
          index-vs-HEAD for Staged, worktree-vs-index for Unstaged, and
@@ -143,10 +192,26 @@ let create
   (* The inferred branch stack: same generation-guard shape as fetch_now,
      refreshed alongside it (mutations and the poller both go through
      [refresh]). *)
-  let stack, set_stack = Bonsai.state (Ok []) graph in
+  (* Display result + LAST-GOOD branches: a transient poll failure must
+     not collapse an active review or the inferred base (and the retry
+     press a blank pane invites would TOGGLE the review off — the
+     confirmed trap). Display still shows the error. *)
+  let stack_state, inject_stack =
+    Bonsai.state_machine
+      ~default_model:(Ok [], [])
+      ~apply_action:(fun _ctx ((_ : _ Or_error.t), last_good) result ->
+        match result with
+        | Ok branches -> Ok branches, branches
+        | Error _ as e -> e, last_good)
+      graph
+  in
+  let stack =
+    let%arr stack_state in
+    fst stack_state
+  in
   let stack_generation = ref 0 in
   let fetch_stack =
-    let%arr set_stack in
+    let%arr set_stack = inject_stack in
     let%bind.Effect mine =
       Effect.of_thunk (fun () ->
         incr stack_generation;
@@ -160,13 +225,14 @@ let create
      parent of current). Entries + per-file counts land together; a base
      change refetches via the on_change below. *)
   let base_override, set_base_override = Bonsai.state None graph in
+  let stack_branches =
+    let%arr stack_state in
+    snd stack_state
+  in
   let base =
-    let%arr stack and base_override in
-    let branches =
-      match stack with
-      | Ok branches -> branches
-      | Error (_ : Error.t) -> []
-    in
+    let%arr stack_branches = stack_branches
+    and base_override in
+    let branches = stack_branches in
     match base_override with
     | Some b
       when List.exists branches ~f:(fun (br : Git.Branch_stack.Branch.t) ->
@@ -178,37 +244,148 @@ let create
     let%arr set_base_override in
     fun branch -> set_base_override (Some branch)
   in
-  let committed_state, set_committed =
-    Bonsai.state ([], String.Map.empty, String.Map.empty) graph
+  (* The review target: toggled through a state machine (same target
+     again clears back to the self view — the model IS the current value,
+     so bursts are safe without peeking). No validity filter needed:
+     [Branch_stack.parent_of] returns None for a vanished branch and
+     [comparison] falls back to the self view. *)
+  let review_target, inject_review_target =
+    Bonsai.state_machine
+      ~default_model:None
+      ~apply_action:(fun _ctx current action ->
+        match action with
+        | `Clear -> None
+        | `Toggle target ->
+          if [%equal: Review_target.t option] current (Some target)
+          then None
+          else Some target)
+      graph
   in
+  let set_review_target =
+    let%arr inject_review_target in
+    fun ~branch ~prefer_origin ->
+      inject_review_target (`Toggle (Review_target.Stack { branch; prefer_origin }))
+  in
+  (* the prompt path; same toggle semantics — submitting the rev under
+     review again clears back to the self view *)
+  let set_review_rev =
+    let%arr inject_review_target in
+    fun rev -> inject_review_target (`Toggle (Review_target.Rev (String.strip rev)))
+  in
+  (* A STACK target whose branch is gone from the LAST-GOOD stack was
+     really deleted (not a transient error): clear it, or a later
+     same-named branch would silently re-enter review mode. Guarded on a
+     non-empty stack so the pre-first-load [] can't clear an early
+     choice. Typed [Rev] targets are exempt — they were never stack
+     rows; a bad rev surfaces as a fetch error instead. *)
+  Bonsai.Edge.on_change
+    ~equal:Bool.equal
+    ~callback:
+      (let%arr inject_review_target in
+       fun stale -> if stale then inject_review_target `Clear else Effect.Ignore)
+    (let%arr review_target and stack_branches in
+     match review_target with
+     | None | Some (Review_target.Rev (_ : string)) -> false
+     | Some (Stack { branch; _ }) ->
+       (not (List.is_empty stack_branches))
+       && not
+            (List.exists stack_branches ~f:(fun (b : Git.Branch_stack.Branch.t) ->
+               String.equal b.name branch)))
+    graph;
+  let committed_state, set_committed = Bonsai.state no_committed graph in
+  (* Landed with the entries under the same generation: the resolved
+     comparison — (merge-base sha, head ref) for the diff keys, plus the
+     review display names when in review mode. *)
+  let committed_meta, set_committed_meta = Bonsai.state None graph in
   let committed_generation = ref 0 in
+  (* Self view: merge-base(base, HEAD) vs HEAD. Review view: the target
+     branch vs ITS inferred parent, each side preferring origin/<name>
+     when that ref exists (the pushed version is the reviewable truth; R
+     chooses local). Ref resolution and the merge-base run inside the
+     fetch, and the resolved sides land WITH the entries under one
+     generation — the merge-base is derived once here so per-file diff
+     loads never re-run it. *)
+  let comparison =
+    let%arr base and review_target and stack_branches in
+    match review_target with
+    | None -> `Self base
+    | Some (Review_target.Stack { branch; _ } as target) ->
+      (match Git.Branch_stack.parent_of stack_branches branch with
+       | None -> `Self base (* trunk or unknown: nothing to review against *)
+       | Some parent -> `Review (target, parent))
+    | Some (Rev (_ : string) as target) ->
+      (* a typed rev has no place in the stack; the trunk is its base
+         (what "a PR against main" means) *)
+      (match
+         List.find stack_branches ~f:(fun (b : Git.Branch_stack.Branch.t) -> b.is_trunk)
+       with
+       | None -> `Self base
+       | Some trunk -> `Review (target, trunk.name))
+  in
   let fetch_committed =
-    let%arr set_committed and base in
+    let%arr set_committed and set_committed_meta and comparison and set_notice in
     let%bind.Effect mine =
       Effect.of_thunk (fun () ->
         incr committed_generation;
         !committed_generation)
     in
     let%bind.Effect result =
-      match base with
-      | None -> Effect.return (Ok ([], String.Map.empty, String.Map.empty))
-      | Some base -> Effect.of_deferred_thunk (fun () -> Git.Queries.committed ~base ())
+      Effect.of_deferred_thunk (fun () ->
+        let open Async in
+        let fetch ~base_ref ~head ~review =
+          match%bind Git.Queries.merge_base base_ref head with
+          | Error _ as e -> return (e, Some ("?", head, review))
+          | Ok merge_sha ->
+            let%map result = Git.Queries.committed ~base:merge_sha ~head () in
+            Or_error.map result ~f:(fun r -> r), Some (merge_sha, head, review)
+        in
+        match comparison with
+        | `Self None -> return (Ok no_committed, None)
+        | `Self (Some base) -> fetch ~base_ref:base ~head:"HEAD" ~review:None
+        | `Review (Review_target.Stack { branch; prefer_origin }, parent) ->
+          let%bind head_ref, base_ref =
+            Deferred.both
+              (Git.Queries.resolve_review_ref ~prefer_origin branch)
+              (Git.Queries.resolve_review_ref ~prefer_origin parent)
+          in
+          fetch ~base_ref ~head:head_ref ~review:(Some { branch; head_ref; base_ref })
+        | `Review (Rev rev, parent) ->
+          (* head is LITERAL; the trunk base still prefers its pushed
+             version *)
+          let%bind base_ref =
+            Git.Queries.resolve_review_ref ~prefer_origin:true parent
+          in
+          fetch ~base_ref ~head:rev ~review:(Some { branch = rev; head_ref = rev; base_ref }))
     in
     let%bind.Effect current = Effect.of_thunk (fun () -> !committed_generation) in
     if current = mine
-    then
-      set_committed
-        (match result with
-         | Ok r -> r
-         | Error (_ : Error.t) -> [], String.Map.empty, String.Map.empty)
+    then (
+      let result, meta = result in
+      (* a FAILED comparison must not render as a clean empty review —
+         keep the meta (the title still names what was attempted) and
+         say why in the status bar *)
+      let entries, notice =
+        match result with
+        | Ok r -> r, None
+        | Error e ->
+          ( no_committed
+          , Some (String.prefix (Error.to_string_hum e) 80) )
+      in
+      Effect.Many
+        [ set_committed entries
+        ; set_committed_meta meta
+        ; (match notice with
+           | Some (_ : string) when Option.is_some meta -> set_notice notice
+           | Some _ | None -> Effect.Ignore)
+        ])
     else Effect.Ignore
   in
   Bonsai.Edge.on_change
-    ~equal:[%equal: string option]
+    ~equal:[%equal: Comparison.t]
     ~callback:
       (let%arr fetch_committed in
-       fun (_ : string option) -> fetch_committed)
-    base
+       fun (_ : Comparison.t) -> fetch_committed)
+    comparison
     graph;
   (* Review marks, keyed by the content pair (old blob, new blob) — the
      spec's design: a mark survives restacks that don't touch the file and
@@ -497,18 +674,29 @@ let create
         (let%arr copy_path and toggle_review in
          { noop_ops with copy_path; toggle_review })
   in
+  (* The diff keys carry the RESOLVED sides (merge-base sha, head ref) —
+     one source of truth, landed by the fetch. *)
+  let committed_sides =
+    let%arr committed_meta in
+    Option.map committed_meta ~f:(fun (merge_sha, head, (_ : review option)) ->
+      merge_sha, head)
+  in
+  let review_resolved =
+    let%arr committed_meta in
+    Option.bind committed_meta ~f:(fun ((_ : string), (_ : string), review) -> review)
+  in
   let selection =
     let%arr active
     and staged_selection
     and unstaged_selection
     and committed_selection
-    and base in
+    and committed_sides in
     match active with
     | `Staged -> Option.map staged_selection ~f:(fun p -> p, `Staged)
     | `Unstaged -> Option.map unstaged_selection ~f:(fun p -> p, `Unstaged)
     | `Committed ->
-      Option.both committed_selection base
-      |> Option.map ~f:(fun (p, b) -> p, `Committed b)
+      Option.both committed_selection committed_sides
+      |> Option.map ~f:(fun (p, sides) -> p, `Committed sides)
   in
   let branch =
     let%arr load in
@@ -525,7 +713,27 @@ let create
      explicit fetches via the generation check. *)
   let peek_selection = Bonsai.peek selection graph in
   let poll =
-    let%arr set_load and bump_revision and peek_selection and fetch_stack and fetch_committed in
+    let%arr set_load
+    and bump_revision
+    and peek_selection
+    and fetch_stack
+    and fetch_committed
+    and comparison in
+    (* watch exactly the remote refs the active review depends on — no
+       more (all of refs/remotes would turn every unrelated fetch into a
+       full refresh), no less *)
+    let remote_refs =
+      match comparison with
+      | `Self (_ : string option) -> []
+      | `Review (Review_target.Stack { branch; prefer_origin = (_ : bool) }, parent) ->
+        [ "refs/remotes/origin/" ^ branch; "refs/remotes/origin/" ^ parent ]
+      | `Review (Rev rev, parent) ->
+        (* a typed origin/x head is itself a remote ref worth watching *)
+        (match String.chop_prefix rev ~prefix:"origin/" with
+         | Some bare -> [ "refs/remotes/origin/" ^ bare ]
+         | None -> [])
+        @ [ "refs/remotes/origin/" ^ parent ]
+    in
     let%bind.Effect mine = Effect.of_thunk (fun () -> !generation) in
     let%bind.Effect selected = peek_selection in
     let selected_path =
@@ -547,7 +755,7 @@ let create
         (* Ref moves on OTHER branches (restacks, new branches) change
            neither the status output nor the index — the refs listing is
            what makes the stack pane track them. *)
-        let%bind refs = Git.Queries.refs_signature () in
+        let%bind refs = Git.Queries.refs_signature ~extra:remote_refs () in
         let%map selected_m =
           match selected_path with
           | Some path -> mtime path
@@ -611,5 +819,13 @@ let create
   ; toggle_review
   ; base
   ; set_base
+  ; set_review_rev
+  ; review = review_resolved
+  ; review_intent =
+      (let%arr review_target in
+       Option.map review_target ~f:(function
+         | Review_target.Stack { branch; prefer_origin } -> branch, prefer_origin
+         | Rev rev -> rev, false))
+  ; set_review_target
   }
 ;;

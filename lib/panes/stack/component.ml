@@ -7,7 +7,7 @@ open Bonsai.Let_syntax
    selection yet — set-as-base arrives with relative mode). All mutations
    go through the machine; the wheel scrolls without moving the cursor. *)
 
-let component ~status ~base ~set_base : Widget.t =
+let component ~status ~base ~review_branch ~set_base ~set_review : Widget.t =
   fun ~dimensions (local_ graph) ->
   let branches =
     let%arr status in
@@ -16,28 +16,36 @@ let component ~status ~base ~set_base : Widget.t =
     | `Loading | `Error _ | `Empty _ -> []
   in
   let machine_input =
-    let%arr branches and set_base in
-    branches, set_base
+    let%arr branches and set_base and set_review in
+    branches, set_base, set_review
   in
   let model, inject =
     Bonsai.state_machine_with_input
       ~default_model:State.Model.initial
       ~apply_action:(fun ctx input model action ->
-        let branches, set_base =
-          match input with
-          | Bonsai.Computation_status.Active input -> input
-          | Inactive -> [], fun (_ : string) -> Effect.Ignore
-        in
-        (match action with
-         | State.Action.Enter _ ->
-           (* Base-setting resolves against the CURRENT selection. *)
-           let rows = State.visible ~branches ~overrides:model.overrides in
-           (match List.nth rows (State.index_of rows (State.selection_key model)) with
-            | Some { State.Row.kind = Branch b; _ } when not b.is_current ->
-              Bonsai.Apply_action_context.schedule_event ctx (set_base b.name)
-            | Some _ | None -> ())
-         | _ -> ());
-        State.apply_action ~branches model action)
+        match input with
+        | Bonsai.Computation_status.Inactive ->
+          State.apply_action ~branches:[] model action
+        | Active (branches, set_base, set_review) ->
+          (match action with
+           | State.Action.Operate { op; height = (_ : int) } ->
+             (* the verb's target resolves against the CURRENT selection
+                at apply time *)
+             let rows = State.visible ~branches ~overrides:model.overrides in
+             (match List.nth rows (State.index_of rows (State.selection_key model)) with
+              | Some { State.Row.kind = Branch b; _ } ->
+                (match op with
+                 | State.Op.Set_base when not b.is_current ->
+                   Bonsai.Apply_action_context.schedule_event ctx (set_base b.name)
+                 | Review { prefer_origin } when not b.is_trunk ->
+                   (* the trunk has no parent to review against *)
+                   Bonsai.Apply_action_context.schedule_event
+                     ctx
+                     (set_review ~branch:b.name ~prefer_origin)
+                 | Set_base | Review _ -> ())
+              | Some { kind = Group _; _ } | None -> ())
+           | _ -> ());
+          State.apply_action ~branches model action)
       machine_input
       graph
   in
@@ -53,8 +61,8 @@ let component ~status ~base ~set_base : Widget.t =
      |> List.map ~f:(fun (r : State.Row.t) -> r.key))
     graph;
   let view =
-    let%arr status and model and base and dimensions in
-    Render.render ~status ~model ~base ~dimensions
+    let%arr status and model and base and review_branch and dimensions in
+    Render.render ~status ~model ~base ~review_branch ~dimensions
   in
   let handler =
     let%arr inject and branches and model and dimensions in
@@ -68,7 +76,11 @@ let component ~status ~base ~set_base : Widget.t =
          what the Committed pane diffs against. Routed through the machine
          so the target resolves at APPLY time. *)
       | Event.Key_press { key = Enter; mods = [] } ->
-        inject (State.Action.Enter { height })
+        inject (State.Action.Operate { op = Set_base; height })
+      | Key_press { key = ASCII 'r'; mods = [] } ->
+        inject (State.Action.Operate { op = Review { prefer_origin = true }; height })
+      | Key_press { key = ASCII 'R'; mods = [] } ->
+        inject (State.Action.Operate { op = Review { prefer_origin = false }; height })
       | Event.Key_press { key = ASCII 'j'; mods = [] }
       | Key_press { key = Arrow `Down; mods = [] } ->
         inject (State.Action.Move { dir = `Down; height })

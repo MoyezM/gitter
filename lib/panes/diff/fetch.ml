@@ -12,7 +12,7 @@ type payload =
 type side =
   [ `Staged
   | `Unstaged
-  | `Committed of string
+  | `Committed of string * string
   ]
 [@@deriving equal]
 
@@ -51,10 +51,12 @@ let fetch_text ((path, side) : key) =
       ( Git.Queries.diff_staged path
       , or_empty (Git.Queries.file_at_head path)
       , or_empty (Git.Queries.file_in_index path) )
-    | `Committed base ->
-      ( Git.Queries.diff_committed ~base path
-      , or_empty (Git.Queries.file_at_base ~base path)
-      , or_empty (Git.Queries.file_at_head path) )
+    | `Committed (base_sha, head) ->
+      (* base is the RESOLVED merge-base sha (git_data derives it once
+         per committed fetch) — both sides are plain rev shows *)
+      ( Git.Queries.diff_committed ~base:base_sha ~head path
+      , or_empty (Git.Queries.file_at_rev ~rev:base_sha path)
+      , or_empty (Git.Queries.file_at_rev ~rev:head path) )
   in
   let%bind diff in
   let%bind old_content in

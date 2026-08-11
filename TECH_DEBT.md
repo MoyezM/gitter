@@ -43,6 +43,14 @@ For the record, resolved in the tech-debt sweep:
 - Stack pane: slash-prefix grouping is one level deep; fold overrides
   for deleted branches/groups are never pruned from the model (harmless,
   unbounded only in theory).
+- `Git_data.reviewed` (dir roll-up of review marks) is O(files x dirs)
+  per mark toggle — invisible on self-view diffs, a potential hitch on
+  branch-sized reviews (~2000 files). Fix: one pass accumulating per-dir
+  (total, reviewed) counts.
+- Review-mode ref resolution (2x rev-parse + merge-base) re-runs on
+  every committed fetch (each staging keypress, each poll-detected
+  change) though it only changes when refs move. Cache keyed on
+  (comparison, refs signature) if it ever shows up.
 - Stack inference needs REFLOGS to re-associate a child with an amended
   parent — fresh clones (no reflog history) degrade to trunk-child until
   the next restack. Promoted by distribution: every outside user starts

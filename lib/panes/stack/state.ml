@@ -39,6 +39,16 @@ module Model = struct
   let initial = { listing = Listing.Model.initial; overrides = String.Map.empty }
 end
 
+module Op = struct
+  (* The effectful verbs a branch row supports; the host owns the
+     effects (git_data's base/review state), the machine only resolves
+     the target. *)
+  type t =
+    | Set_base (* Enter *)
+    | Review of { prefer_origin : bool } (* r: origin-preferred; R: local *)
+  [@@deriving sexp_of]
+end
+
 module Action = struct
   (* Height rides the actions: the state machine has no dimensions (see
      the files pane precedent). *)
@@ -58,9 +68,13 @@ module Action = struct
         ; height : int
         }
     | Rows_changed (* the derived rows changed: repair the selection *)
-    | Enter of { height : int }
-      (* set the selected branch as the diff base (resolved at APPLY time
-         by the host wrapper — burst-safe); on a group row: toggle it *)
+    | Operate of
+        { op : Op.t
+        ; height : int
+        }
+      (* an effectful verb on the selected branch, resolved at APPLY
+         time by the host wrapper (burst-safe); on a group row: fold
+         toggle *)
   [@@deriving sexp_of]
 end
 
@@ -248,7 +262,7 @@ let rec apply_action ~branches (model : Model.t) (action : Action.t) =
       else model
     | Rows_changed ->
       { model with Model.listing = Listing.rows_changed ~key:row_key current model.listing }
-    | Enter { height } ->
+    | Operate { height; op = (_ : Op.t) } ->
       (* Group rows fold-toggle; branch resolution happens in the host
          wrapper, which re-dispatches here for the group case. *)
       let r = List.nth_exn current index in

@@ -15,11 +15,17 @@ open Bonsai.Let_syntax
 
 let layout_tree ~(data : Git_data.t) ~commit ~copy_path =
   let diff_title =
-    let%arr selection = data.selection in
+    let%arr selection = data.selection
+    and base = data.base
+    and review = data.review in
     match selection with
     | Some (path, `Staged) -> path ^ " (staged)"
     | Some (path, `Unstaged) -> path
-    | Some (path, `Committed base) -> sprintf "%s (vs %s)" path base
+    | Some (path, `Committed ((_ : string), (_ : string))) ->
+      (* the key carries resolved shas; label with the ref NAMES *)
+      (match review with
+       | Some r -> sprintf "%s (%s vs %s)" path r.Git_data.head_ref r.base_ref
+       | None -> sprintf "%s (vs %s)" path (Option.value base ~default:"base"))
     | None -> "Diff"
   in
   let files_status rows ~empty =
@@ -63,8 +69,10 @@ let layout_tree ~(data : Git_data.t) ~commit ~copy_path =
   in
   let no_reviews = Bonsai.return String.Set.empty in
   let files_pane ~id ~title ~title_right ~status ~counts ~reviewed ~side
+        ?commit_override
         (section : Git_data.section_data)
     =
+    let commit = Option.value commit_override ~default:commit in
     Layout.Component.Tree.leaf
       ~id
       ~title
@@ -80,23 +88,33 @@ let layout_tree ~(data : Git_data.t) ~commit ~copy_path =
          ~commit
          ~inject:section.inject)
   in
-  (* The committed pane: this branch vs its base. *)
+  (* The committed pane: this branch vs its base — or, in review mode,
+     the chosen branch vs its parent. *)
   let committed_status =
     let%arr load = data.load
     and rows = data.committed.rows
-    and base = data.base in
-    match load with
-    | Git_data.Load.Not_loaded | Loading -> `Loading
-    | Loaded _ ->
-      (match base with
-       | None -> `Empty "no base branch"
-       | Some b -> if List.is_empty rows then `Empty ("nothing committed vs " ^ b) else `Tree)
+    and base = data.base
+    and review = data.review in
+    let empty_message =
+      match review, base with
+      | Some r, _ -> Some (sprintf "nothing in %s vs %s" r.Git_data.head_ref r.base_ref)
+      | None, Some b -> Some ("nothing committed vs " ^ b)
+      | None, None -> None
+    in
+    match load, empty_message with
+    | (Git_data.Load.Not_loaded | Loading), _ -> `Loading
+    | Loaded _, None -> `Empty "no base branch"
+    | Loaded _, Some m -> if List.is_empty rows then `Empty m else `Tree
   in
   let committed_title =
-    let%arr base = data.base in
-    match base with
-    | Some b -> "Committed vs " ^ b
-    | None -> "Committed"
+    let%arr base = data.base
+    and review = data.review in
+    match review with
+    | Some r -> sprintf "Review %s vs %s" r.Git_data.head_ref r.base_ref
+    | None ->
+      (match base with
+       | Some b -> "Committed vs " ^ b
+       | None -> "Committed")
   in
   (* The committed title bar carries counts plus review progress. *)
   let committed_title_right =
@@ -132,6 +150,13 @@ let layout_tree ~(data : Git_data.t) ~commit ~copy_path =
                   ~counts:data.committed_counts
                   ~reviewed:data.reviewed
                   ~side:`Committed
+                  ~commit_override:
+                    (* committing the LOCAL repo from inside another
+                       branch's review would be a misfire *)
+                    (let%arr commit and review = data.review in
+                     match review with
+                     | Some (_ : Git_data.review) -> Effect.Ignore
+                     | None -> commit)
                   data.committed )
             ; ( 1.
               , files_pane
@@ -170,7 +195,13 @@ let layout_tree ~(data : Git_data.t) ~commit ~copy_path =
                   (Panes.Stack.Component.component
                      ~status:stack_status
                      ~base:data.base
-                     ~set_base:data.set_base) )
+                     ~review_branch:
+                       (* the INTENT: instant marker feedback on r, no
+                          fetch round-trip *)
+                       (let%arr intent = data.review_intent in
+                        Option.map intent ~f:fst)
+                     ~set_base:data.set_base
+                     ~set_review:data.set_review_target) )
             ] )
       ; ( 2.
         , leaf
@@ -185,8 +216,8 @@ let layout_tree ~(data : Git_data.t) ~commit ~copy_path =
       ])
 ;;
 
-let commands ~(layout : Layout.Component.Controls.t Bonsai.t) ~refresh ~commit ~terminal =
-  let%arr layout and refresh and commit and terminal in
+let commands ~(layout : Layout.Component.Controls.t Bonsai.t) ~refresh ~commit ~terminal ~review_rev =
+  let%arr layout and refresh and commit and terminal and review_rev in
   [ Menu.Commands.Group
       { key = 'w'
       ; label = "window"
@@ -214,6 +245,7 @@ let commands ~(layout : Layout.Component.Controls.t Bonsai.t) ~refresh ~commit ~
           [ Action { key = 'r'; label = "reload status"; effect = refresh }
           ; Action { key = 'c'; label = "commit"; effect = commit }
           ; Action { key = 't'; label = "terminal"; effect = terminal }
+          ; Action { key = 'v'; label = "review rev"; effect = review_rev }
           ]
       }
   ]
@@ -248,7 +280,7 @@ let hints ~focused =
   | "staged" -> "j/k:move  u:unstage  c:commit  y:copy path  Space:menu  Tab:pane"
   | "changes" -> "j/k:move  s:stage  d:discard  c:commit  y:copy path  Tab:pane"
   | "diff" -> "j/k:move  n/p:page  h/l:pan  s/u:\u{00B1}hunk  y:copy path"
-  | "stack" -> "j/k:move  h/l:fold  Enter:set base  Space:menu  Tab:pane"
+  | "stack" -> "j/k:move  h/l:fold  Enter:base  r/R:review  Space:menu  Tab:pane"
   | _ -> "Space:menu  Tab:focus  C-t:term  Ctrl-C:quit"
 ;;
 
@@ -330,6 +362,14 @@ let app ~exit ~(dimensions : Dimensions.t Bonsai.t) (local_ graph)
       ~title:"Commit message"
       ~on_submit:commit
   in
+  (* Review any rev by name (origin/foo, a sha, a tag) — the head is
+     used literally, based against the trunk. *)
+  let review_rev =
+    let%arr modal_controls and set_review_rev = data.set_review_rev in
+    modal_controls.Modal.Component.Controls.prompt
+      ~title:"Review rev (branch, origin/branch, sha)"
+      ~on_submit:set_review_rev
+  in
   let term =
     Term_pane.Component.create
       ~dimensions:screen_dimensions
@@ -349,6 +389,23 @@ let app ~exit ~(dimensions : Dimensions.t Bonsai.t) (local_ graph)
       graph
   in
   let controls = Layout.Component.controls ~inject:layout_inject in
+  (* Entering review mode reveals the committed pane (it starts hidden):
+     pressing r in the stack pane must SHOW the review, not set it
+     invisibly. Watches the INTENT (synchronous with the keypress), not
+     the resolved review, which only lands after a fetch. Leaving review
+     mode leaves the layout alone. *)
+  Bonsai.Edge.on_change
+    ~equal:[%equal: (string * bool) option]
+    ~callback:
+      (let%arr controls in
+       function
+       | None -> Effect.Ignore
+       (* keyed on the FULL intent: r->R on one branch changes only the
+          flag and must still re-reveal a pane hidden in between *)
+       | Some ((_ : string), (_ : bool)) ->
+         controls.Layout.Component.Controls.show "committed")
+    data.review_intent
+    graph;
   let screen =
     Layout.Component.component layout_tree ~model:layout_model ~inject:layout_inject
   in
@@ -359,6 +416,7 @@ let app ~exit ~(dimensions : Dimensions.t Bonsai.t) (local_ graph)
            ~layout:controls
            ~refresh:data.refresh
            ~commit
+           ~review_rev
            ~terminal:
              (let%arr c = term_controls in
               c.Term_pane.Component.Controls.toggle))

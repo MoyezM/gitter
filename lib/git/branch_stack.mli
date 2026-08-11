@@ -41,3 +41,7 @@ val parse
 (** The current branch's parent branch in a parsed stack — the default
     base for the committed-vs-base view. None when absent or on trunk. *)
 val parent_of_current : Branch.t list -> string option
+
+(** [name]'s parent branch — the base a review of [name] diffs against.
+    None when [name] is absent or the trunk. *)
+val parent_of : Branch.t list -> string -> string option

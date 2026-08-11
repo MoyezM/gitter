@@ -6,11 +6,17 @@ open! Bonsai_term
     activates (toggles branches with children); the wheel scrolls the
     viewport without moving the cursor; ENTER (and only Enter — a
     misclick must not swap the diff base) runs [set_base] on the selected
-    branch. [base] marks the committed view's current base row. Top-level
-    branches off the current branch's chain start collapsed. *)
+    branch. [base] marks the committed view's current base row. r runs
+    [set_review] on the selected branch (review it against its parent,
+    preferring origin/<branch>); R reviews the LOCAL branch; the trunk
+    has no parent and is skipped. [review_branch] marks the branch under
+    review. Top-level branches off the current branch's chain start
+    collapsed. *)
 
 val component
   :  status:Render.status Bonsai.t
   -> base:string option Bonsai.t
+  -> review_branch:string option Bonsai.t
   -> set_base:(string -> unit Effect.t) Bonsai.t
+  -> set_review:(branch:string -> prefer_origin:bool -> unit Effect.t) Bonsai.t
   -> Widget.t

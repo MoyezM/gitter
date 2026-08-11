@@ -15,7 +15,8 @@ let status () =
 ;;
 
 (* The file's content at HEAD — the base of a staged diff. *)
-let file_at_head path = Runner.git [ "show"; "HEAD:" ^ path ]
+let file_at_rev ~rev path = Runner.git [ "show"; rev ^ ":" ^ path ]
+let file_at_head path = file_at_rev ~rev:"HEAD" path
 
 (* The file's content in the INDEX (stage 0) — the base of an unstaged
    diff, and the result side of a staged one. *)
@@ -67,9 +68,15 @@ let diff_staged path =
 (* ---- the branch stack (pure git; see Stack) ---------------------------- *)
 
 (* Cheap change signature for the poller: any local ref move shows up. *)
-let refs_signature () =
+let refs_signature ~extra () =
   match%map.Deferred
-    Runner.git [ "for-each-ref"; "refs/heads"; "--format=%(refname:short)%09%(objectname)" ]
+    Runner.git
+      (* [extra]: the review target's origin refs, when one is active — a
+         fetch moving them must refresh the view, but watching all of
+         refs/remotes would make every unrelated fetch a full refresh *)
+      ([ "for-each-ref"; "refs/heads" ]
+       @ extra
+       @ [ "--format=%(refname:short)%09%(objectname)" ])
   with
   | Ok output -> output
   | Error e -> "error:" ^ Error.to_string_hum e
@@ -193,13 +200,15 @@ let diffstat () =
    range): entries, per-file +/- counts, and each file's (old blob, new
    blob) pair — the review-mark key. A missing/unrelated base yields
    empty — the pane shows its idle message. *)
-let committed ~base () =
-  let range = base ^ "...HEAD" in
+let committed ~base ~head () =
+  let range = base ^ "..." ^ head in
   let open Deferred.Or_error.Let_syntax in
-  let%bind raw =
-    Runner.git [ "diff"; "--no-color"; "--raw"; "--no-abbrev"; "-M"; range ]
-  in
-  let%map stats = Runner.git [ "diff"; "--no-color"; "--numstat"; "-M"; range ] in
+  (* independent reads of the same range — in parallel; review-mode
+     ranges are branch-sized, so serializing them is a visible cost *)
+  let raw_d = Runner.git [ "diff"; "--no-color"; "--raw"; "--no-abbrev"; "-M"; range ] in
+  let stats_d = Runner.git [ "diff"; "--no-color"; "--numstat"; "-M"; range ] in
+  let%bind raw = raw_d in
+  let%map stats = stats_d in
   let parsed = Status.parse_raw raw in
   ( List.map parsed ~f:fst
   , Diff.numstat stats |> String.Map.of_alist_reduce ~f:(fun first _ -> first)
@@ -207,18 +216,29 @@ let committed ~base () =
     |> String.Map.of_alist_reduce ~f:(fun first _ -> first) )
 ;;
 
-(* The two blob sides of a committed file diff, for highlighting: the
-   merge-base's content and HEAD's. *)
-let file_at_base ~base path =
-  let open Deferred.Or_error.Let_syntax in
-  let%bind mb = Runner.git [ "merge-base"; base; "HEAD" ] in
-  Runner.git [ "show"; String.strip mb ^ ":" ^ path ]
+let merge_base a b =
+  Deferred.Or_error.map (Runner.git [ "merge-base"; a; b ]) ~f:String.strip
 ;;
 
-let diff_committed ~base path =
+let diff_committed ~base ~head path =
   let%bind.Deferred.Or_error output =
     Runner.git
-      [ "diff"; "--no-color"; "-M"; base ^ "...HEAD"; "--"; Runner.literal path ]
+      [ "diff"; "--no-color"; "-M"; base ^ "..." ^ head; "--"; Runner.literal path ]
   in
   parse_off_thread output
+;;
+
+(* Review-target resolution: the pushed version is the reviewable truth,
+   so prefer origin/<name> when that ref exists (a local remote-tracking
+   ref — no network is ever touched). *)
+let resolve_review_ref ~prefer_origin name =
+  if not prefer_origin
+  then Deferred.return name
+  else (
+    let remote = "origin/" ^ name in
+    match%map.Deferred
+      Runner.git [ "rev-parse"; "--verify"; "--quiet"; remote ^ "^{commit}" ]
+    with
+    | Ok (_ : string) -> remote
+    | Error (_ : Error.t) -> name)
 ;;

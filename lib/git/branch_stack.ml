@@ -279,16 +279,22 @@ let parse ~heads ~dag ~reflogs ~trunk ~current =
     walk trunk 0
 ;;
 
-(* The current branch's parent in a parsed stack: the nearest earlier
-   entry one depth shallower (display order is DFS, trunk first). *)
-let parent_of_current (branches : Branch.t list) =
-  match List.findi branches ~f:(fun _ b -> b.is_current) with
+(* A branch's parent in a parsed stack: the nearest earlier entry one
+   depth shallower (display order is DFS, trunk first). *)
+let parent_in (branches : Branch.t list) ~f =
+  match List.findi branches ~f:(fun _ b -> f b) with
   | None -> None
-  | Some (i, current) ->
-    if current.depth = 0
+  | Some (i, found) ->
+    if found.depth = 0
     then None
     else
       List.filter_mapi branches ~f:(fun j b ->
-        Option.some_if (j < i && b.depth = current.depth - 1) b.name)
+        Option.some_if (j < i && b.depth = found.depth - 1) b.name)
       |> List.last
+;;
+
+let parent_of_current branches = parent_in branches ~f:(fun b -> b.is_current)
+
+let parent_of branches name =
+  parent_in branches ~f:(fun b -> String.equal b.name name)
 ;;

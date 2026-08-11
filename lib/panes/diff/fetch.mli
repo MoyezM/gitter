@@ -26,7 +26,12 @@ type payload =
 type side =
   [ `Staged
   | `Unstaged
-  | `Committed of string (** the base branch *)
+  | `Committed of string * string
+    (** (merge-base sha, head rev) as RESOLVED by the committed fetch —
+        head is "HEAD" for the self view, the reviewed branch (or
+        origin/branch) in review mode. Both ride the key, so a base or
+        target switch is a key change and resets the pane; the sha means
+        per-file loads never re-derive the merge-base. *)
   ]
 [@@deriving equal]
 

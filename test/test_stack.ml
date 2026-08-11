@@ -297,7 +297,14 @@ let () =
   let on_trunk =
     Stack.parse ~heads:"main\tM" ~dag:"" ~reflogs:"" ~trunk:"main" ~current:(Some "main")
   in
-  check "trunk has no base" (Option.is_none (Stack.parent_of_current on_trunk))
+  check "trunk has no base" (Option.is_none (Stack.parent_of_current on_trunk));
+  (* parent_of: the review view's base for an ARBITRARY branch. *)
+  check "parent_of mid-stack"
+    ([%equal: string option] (Stack.parent_of branches "b") (Some "a"));
+  check "parent_of child of trunk"
+    ([%equal: string option] (Stack.parent_of branches "a") (Some "main"));
+  check "parent_of trunk" (Option.is_none (Stack.parent_of branches "main"));
+  check "parent_of unknown" (Option.is_none (Stack.parent_of branches "nope"))
 ;;
 
 let () = print_endline "All stack tests passed."

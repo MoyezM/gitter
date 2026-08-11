@@ -13,10 +13,11 @@ on:
 
 jobs:
   build-test:
-    # Both published platforms. ubuntu-22.04 rather than -latest on purpose:
-    # its glibc 2.35 is the floor the release binary inherits, so CI builds
-    # against exactly what release.yml ships. Every cache key below is
-    # already keyed on runner.os/runner.arch, so the two legs never collide.
+    # All three published platforms. ubuntu-22.04 rather than -latest on
+    # purpose: its glibc 2.35 is the floor the release binaries inherit, so
+    # CI builds against exactly what release.yml ships. Every cache key below
+    # is already keyed on runner.os/runner.arch, so the legs never collide —
+    # the two ubuntu legs differ by arch (X64 vs ARM64).
     strategy:
       fail-fast: false
       matrix:

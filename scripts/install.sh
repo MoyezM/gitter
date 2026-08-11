@@ -45,6 +45,7 @@ main() {
     Darwin-arm64)  platform=macos-arm64 ;;
     Darwin-x86_64) platform=macos-x86_64 ;;
     Linux-x86_64)  platform=linux-x86_64 ;;
+    Linux-arm64)   platform=linux-arm64 ;;
     *) err "unsupported platform: $os/$arch" \
            "prebuilt binaries are listed at $RELEASES" ;;
   esac
@@ -75,7 +76,8 @@ main() {
   curl -fsSL -o "$tmp/$asset" "$base/$asset" \
     || err "download failed: $base/$asset" \
            "either tag $tag does not exist, or there is no prebuilt binary" \
-           "for $platform yet (macos-arm64 and linux-x86_64 are published)." \
+           "for $platform yet (macos-arm64, linux-x86_64 and linux-arm64" \
+           "are published)." \
            "see $RELEASES"
 
   curl -fsSL -o "$tmp/checksums.txt" "$base/checksums.txt" \

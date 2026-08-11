@@ -59,7 +59,8 @@ done
 os="$(uname -s)"
 case "$os/$(uname -m)" in
   Darwin/arm64) platform=macos-arm64 ;;
-  Linux/x86_64) platform=linux-x86_64 ;;
+  Linux/x86_64)  platform=linux-x86_64 ;;
+  Linux/aarch64) platform=linux-arm64 ;;
   *) die "no release artifact is published for $os/$(uname -m)" ;;
 esac
 

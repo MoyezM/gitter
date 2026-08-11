@@ -31,6 +31,8 @@ jobs:
             platform: macos-arm64
           - os: ubuntu-22.04
             platform: linux-x86_64
+          - os: ubuntu-22.04-arm
+            platform: linux-arm64
     runs-on: ${{ matrix.os }}
     timeout-minutes: 120
     steps:
@@ -246,7 +248,13 @@ jobs:
   # way linux-x86_64 ever reaches anyone.
   verify-install-script:
     needs: publish
-    runs-on: ubuntu-22.04
+    # Both Linux assets, on the architecture each is actually for — curl|bash
+    # is the only route by which either of them reaches anyone.
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-22.04, ubuntu-22.04-arm]
+    runs-on: ${{ matrix.os }}
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4

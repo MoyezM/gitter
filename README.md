@@ -74,20 +74,24 @@ outside `/usr/lib`, so there is no runtime to install.
 
 ## Install
 
-macOS on Apple Silicon. That is the only build that exists — see
+macOS on Apple Silicon, or Linux on x86_64 or arm64 — see
 [Limitations](#limitations).
+
+macOS, via the tap:
 
 ```sh
 brew install MoyezM/tap/gitter
 ```
 
-or:
+macOS or Linux:
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/MoyezM/gitter/main/scripts/install.sh | bash
 ```
 
 or take a tarball from the [releases page](https://github.com/MoyezM/gitter/releases).
+
+The published builds are `macos-arm64`, `linux-x86_64` and `linux-arm64`.
 
 Prebuilt binaries only. Building from source needs a custom compiler; see
 [Building](#building).
@@ -124,8 +128,9 @@ Menu paths worth knowing: `Space w r` review layout, `Space w w` work layout,
 
 Worth knowing before you install:
 
-- macOS on Apple Silicon only. There is no Intel build and no Linux build; the
-  pty stubs use macOS headers and Linux has never been compiled.
+- No Intel macOS build. Linux ships for x86_64 and arm64, but against glibc
+  2.35, so anything older cannot run it — and musl distributions such as
+  Alpine are out entirely, because the OxCaml toolchain does not support them.
 - The binary is large — the vendored grammars are most of it.
 - Truecolor is assumed. Terminals without it have no fallback yet.
 - A fresh clone has no reflog, so the stack degrades to a flat list of trunk

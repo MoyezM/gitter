@@ -1,6 +1,18 @@
 (executable
  (name bench_diff)
  (libraries async core core_unix.command_unix gitter gitter_grammar_c tree-sitter)
- (link_flags (-cclib -Wl,-w)) ; silence SDK-version ld warning flood
+ (link_flags (:include link_flags.sexp))
  (preprocess
   (pps ppx_jane)))
+
+; -Wl,-w silences the SDK-version ld warning flood, and is macOS-only: GNU
+; ld has no -w and rejects the option outright, so Linux links with none.
+(rule
+ (targets link_flags.sexp)
+ (action
+  (with-stdout-to
+   %{targets}
+   (run
+    bash
+    -c
+    "if [ \"$(uname -s)\" = Darwin ]; then printf '(-cclib -Wl,-w)'; else printf '()'; fi"))))

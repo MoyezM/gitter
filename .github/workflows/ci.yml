@@ -13,7 +13,15 @@ on:
 
 jobs:
   build-test:
-    runs-on: macos-15
+    # Both published platforms. ubuntu-22.04 rather than -latest on purpose:
+    # its glibc 2.35 is the floor the release binary inherits, so CI builds
+    # against exactly what release.yml ships. Every cache key below is
+    # already keyed on runner.os/runner.arch, so the two legs never collide.
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-15, ubuntu-22.04]
+    runs-on: ${{ matrix.os }}
     timeout-minutes: 120
     steps:
       - uses: actions/checkout@v4

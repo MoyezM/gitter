@@ -1,7 +1,8 @@
-# Tag push (v*) -> build a release binary with the tag baked in, gate on
-# portability (no /nix/store references), strip + ad-hoc re-sign, package
-# tarball + checksums, publish a GitHub release, then update the Homebrew tap
-# (skipped when HOMEBREW_TAP_TOKEN is not configured).
+# Tag push (v*) -> build a release binary per published platform with the tag
+# baked in, gate each on portability (no /nix/store references), strip + (on
+# macOS) ad-hoc re-sign, then a single publish job writes ONE combined
+# checksums.txt and cuts the GitHub release. The Homebrew tap update runs
+# last and stays macOS-only (skipped when HOMEBREW_TAP_TOKEN is unset).
 name: release
 
 on:
@@ -10,10 +11,19 @@ on:
 
 jobs:
   build:
-    runs-on: macos-15
+    # ubuntu-22.04 rather than -latest deliberately: the release binary links
+    # against the runner's glibc, so the runner's version IS the floor users
+    # need. 22.04's 2.35 covers far more of the field than 24.04's 2.39.
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-15
+            platform: macos-arm64
+          - os: ubuntu-22.04
+            platform: linux-x86_64
+    runs-on: ${{ matrix.os }}
     timeout-minutes: 120
-    permissions:
-      contents: write
     steps:
       - uses: actions/checkout@v4
 
@@ -61,10 +71,11 @@ jobs:
           install -m 755 _build/default/bin/main.exe dist/gitter
           cp LICENSE README.md dist/
 
-      # Portable means: nothing dynamically linked outside /usr/lib and
-      # /System. A /nix/store path would make the binary useless off the
-      # build machine.
-      - name: portability gate
+      # Portable means: nothing dynamically linked outside the platform's own
+      # system directories. A /nix/store path would make the binary useless
+      # off the build machine.
+      - name: portability gate (macOS)
+        if: runner.os == 'macOS'
         run: |
           if otool -L dist/gitter | grep -q '/nix/store'; then
             echo 'FAIL: binary references /nix/store:' >&2
@@ -73,12 +84,35 @@ jobs:
           fi
           otool -L dist/gitter
 
-      # strip invalidates the linker's ad-hoc signature, and arm64 macOS
-      # refuses to run unsigned binaries — re-sign ad hoc after stripping.
-      - name: strip and re-sign
+      - name: portability gate (Linux)
+        if: runner.os == 'Linux'
         run: |
+          if ldd dist/gitter | grep -q '/nix/store'; then
+            echo 'FAIL: binary references /nix/store:' >&2
+            ldd dist/gitter >&2
+            exit 1
+          fi
+          # ldd resolves against THIS machine, so a baked-in RUNPATH into the
+          # nix store can look fine here and break everywhere else. Check the
+          # dynamic section directly.
+          if readelf -d dist/gitter | grep -E 'RUNPATH|RPATH' | grep -q '/nix/store'; then
+            echo 'FAIL: binary has a /nix/store RUNPATH:' >&2
+            readelf -d dist/gitter >&2
+            exit 1
+          fi
+          ldd dist/gitter
+
+      - name: strip and re-sign (macOS)
+        if: runner.os == 'macOS'
+        run: |
+          # strip invalidates the linker's ad-hoc signature, and arm64 macOS
+          # refuses to run unsigned binaries — re-sign ad hoc after stripping.
           strip dist/gitter
           codesign -f -s - dist/gitter
+
+      - name: strip (Linux)
+        if: runner.os == 'Linux'
+        run: strip dist/gitter
 
       - name: smoke test
         env:
@@ -94,19 +128,43 @@ jobs:
       - name: package
         env:
           TAG: ${{ github.ref_name }}
+          PLATFORM: ${{ matrix.platform }}
+        run: tar czf "gitter-${TAG}-${PLATFORM}.tar.gz" -C dist gitter LICENSE README.md
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: tarball-${{ matrix.platform }}
+          path: gitter-*.tar.gz
+          if-no-files-found: error
+
+  # One release, one checksums.txt. Each build leg publishing its own would
+  # clobber the other's — and scripts/install.sh refuses to install without
+  # an entry for its asset in that file.
+  publish:
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: tarball-*
+          merge-multiple: true
+
+      - name: checksums
         run: |
-          tar czf "gitter-${TAG}-macos-arm64.tar.gz" -C dist gitter LICENSE README.md
-          shasum -a 256 *.tar.gz > checksums.txt
+          sha256sum *.tar.gz > checksums.txt
+          cat checksums.txt
 
       - uses: softprops/action-gh-release@v2
         with:
           files: |
-            gitter-*-macos-arm64.tar.gz
+            gitter-*.tar.gz
             checksums.txt
           generate_release_notes: true
 
   update-tap:
-    needs: build
+    needs: publish
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -136,6 +194,9 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: gh release download "${{ github.ref_name }}" --pattern checksums.txt
 
+      # The tap is macOS-only: update-tap.sh picks the macos-arm64 line out of
+      # the combined checksums.txt by exact filename, so the linux entry
+      # sitting alongside it changes nothing.
       - name: update tap
         if: steps.guard.outputs.have_token == 'true'
         env:
@@ -168,3 +229,21 @@ jobs:
           got="$(gitter -version)"
           echo "installed: $got"
           [ "$got" = "$TAG" ] || { echo "FAIL: expected $TAG, got $got" >&2; exit 1; }
+
+  # The other end-user test: the curl|bash path on Linux, which is the only
+  # way linux-x86_64 ever reaches anyone.
+  verify-install-script:
+    needs: publish
+    runs-on: ubuntu-22.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - name: install from the published release
+        env:
+          GITTER_VERSION: ${{ github.ref_name }}
+        run: |
+          ./scripts/install.sh
+          got="$("$HOME/.local/bin/gitter" -version)"
+          echo "installed: $got"
+          [ "$got" = "$GITTER_VERSION" ] \
+            || { echo "FAIL: expected $GITTER_VERSION, got $got" >&2; exit 1; }

@@ -1,1 +1,10 @@
 (lang dune 3.17)
+
+; This file exists only to pin dune's root to this directory (the (lang ...)
+; line has to come first — dune rejects a leading comment). Without it dune
+; walks up to the OUTERMOST enclosing dune-project, which breaks any checkout
+; nested inside another one — notably the worktrees under .claude/worktrees/*,
+; where every build fails with "Don't know about directory .claude/worktrees/…"
+; because dot-directories are excluded from the build. That also leaves
+; ocamllsp with no merlin config for the file being edited, so cross-file
+; references and diagnostics silently stop working in those checkouts.

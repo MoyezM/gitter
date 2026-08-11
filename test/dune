@@ -2,6 +2,18 @@
  (names test_solver test_git test_highlight test_cursor test_tree test_scrollbar
    test_clipboard test_stack test_terminal test_session)
  (libraries async bonsai_term core gitter grammar_registry tree-sitter)
- (link_flags (-cclib -Wl,-w)) ; silence SDK-version ld warning flood
+ (link_flags (:include link_flags.sexp))
  (preprocess
   (pps ppx_jane)))
+
+; -Wl,-w silences the SDK-version ld warning flood, and is macOS-only: GNU
+; ld has no -w and rejects the option outright, so Linux links with none.
+(rule
+ (targets link_flags.sexp)
+ (action
+  (with-stdout-to
+   %{targets}
+   (run
+    bash
+    -c
+    "if [ \"$(uname -s)\" = Darwin ]; then printf '(-cclib -Wl,-w)'; else printf '()'; fi"))))

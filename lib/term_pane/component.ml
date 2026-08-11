@@ -12,10 +12,14 @@ open Bonsai.Let_syntax
 let margin_x = 6
 let margin_y = 2
 
+(* $SHELL is unset under some launchers. /bin/zsh is the macOS default and
+   is always there; most Linux distros do not ship it at all, and only
+   /bin/sh is guaranteed — falling through to a missing shell would open the
+   overlay onto a command that exits 127 immediately. *)
 let shell () =
   match Stdlib.Sys.getenv_opt "SHELL" with
   | Some s when not (String.is_empty (String.strip s)) -> s
-  | _ -> "/bin/zsh"
+  | _ -> if Stdlib.Sys.file_exists "/bin/zsh" then "/bin/zsh" else "/bin/sh"
 ;;
 
 type t =

@@ -75,7 +75,7 @@ main() {
   curl -fsSL -o "$tmp/$asset" "$base/$asset" \
     || err "download failed: $base/$asset" \
            "either tag $tag does not exist, or there is no prebuilt binary" \
-           "for $platform yet (only macos-arm64 is published today)." \
+           "for $platform yet (macos-arm64 and linux-x86_64 are published)." \
            "see $RELEASES"
 
   curl -fsSL -o "$tmp/checksums.txt" "$base/checksums.txt" \

@@ -21,22 +21,27 @@ module Span = struct
     }
 end
 
-(* An embedded language inside the file: a byte range, plus its own tree and
-   query. The tree is parsed with [set_included_ranges], so its node offsets
-   are in the PARENT file's coordinates and need no translation. *)
-type injection =
+(* One parsed layer: a tree, the query that highlights it, and the layers
+   embedded inside it. The whole file is a layer, a fenced code block is a
+   layer, and a fenced block inside THAT is a layer — same shape at every
+   depth, so the file is not a special case and nesting needs no extra
+   machinery.
+
+   Embedded layers are parsed with [set_included_ranges], so their node
+   offsets are already in the file's coordinates and nothing needs
+   translating. *)
+type layer =
   { start_byte : int
   ; end_byte : int
   ; tree : Tree_sitter.Tree.t
   ; query : Tree_sitter.Query.t
+  ; children : layer list (* disjoint, ascending by start_byte *)
   }
 
 type session =
   { starts : int array (* byte offset of each line start *)
   ; length : int
-  ; tree : Tree_sitter.Tree.t
-  ; query : Tree_sitter.Query.t
-  ; injections : injection list (* disjoint, ascending by start_byte *)
+  ; root : layer
   }
 
 type t = session option
@@ -110,32 +115,87 @@ let iter_nodes tree ~f =
   done
 ;;
 
-(* Parse only [range] of [content], with [content] passed WHOLE. That is the
-   point of [set_included_ranges]: tree-sitter parses just the range, but the
-   resulting nodes carry offsets in the parent file's coordinates, so nothing
-   downstream has to translate them. Slicing the substring instead would mean
-   re-basing every offset by hand. *)
-let parse_range ~lang ~content range =
+(* Parse [content], which is passed WHOLE even for an embedded layer. That is
+   the point of [set_included_ranges]: tree-sitter parses only the range, but
+   the nodes it produces carry offsets in the whole file's coordinates, so
+   nothing downstream has to re-base them. Slicing the substring instead
+   would mean translating every offset by hand. [None] — the file layer —
+   parses everything. *)
+let parse ~lang ~content range =
   let parser = Tree_sitter.Parser.create lang in
-  Tree_sitter.Parser.set_included_ranges parser [| range |];
+  Option.iter range ~f:(fun r -> Tree_sitter.Parser.set_included_ranges parser [| r |]);
   Tree_sitter.Parser.parse_string parser content
 ;;
 
-(* The injection for one block node, if it names a language we have a grammar
-   for. None covers all the ordinary misses: an unlabelled fence (no info
-   child), an unknown language, and — via [try_with] — a grammar or query
-   that fails to load, which must cost this block only, not the file.
+(* How deep embedding may nest — markdown inside markdown inside ... Ranges
+   shrink strictly on the way down so this terminates on its own; the cap
+   only bounds the work a pathological document can ask for. *)
+let max_depth = 4
 
-   [queries] is keyed by EXTENSION. [Language.name] is "" for every vendored
-   grammar, so keying on it collapses the cache to a single entry and hands
-   the first language's query to every later block: valid node positions,
-   wrong capture names. *)
-let injection_of_block ~rule ~content ~queries node =
+(* A layer and its children are built by the same function: [build_layer]
+   parses a range, then asks the language's injection rule for the blocks
+   inside it and builds each one as a child layer.
+
+   [queries] is shared by the whole tree of layers and keyed by EXTENSION.
+   [Tree_sitter.Language.name] is "" for every vendored grammar, so keying on
+   it collapses the cache to one entry and hands the first language's query
+   to every later block: valid node positions, wrong capture names. It is a
+   per-build cache rather than the module-level [query_cache] because this
+   runs in a separate domain (see [create]) and that one is main-domain
+   only. *)
+let rec build_layer ~ext ~lang ~query ~content ~range ~queries ~depth =
+  let start_byte, end_byte =
+    match range with
+    | Some r -> r.Tree_sitter.start_byte, r.Tree_sitter.end_byte
+    | None -> 0, String.length content
+  in
+  let tree = parse ~lang ~content range in
+  let children =
+    if depth >= max_depth
+    then []
+    else (
+      match Grammar.injection_rule ext with
+      | None -> []
+      | Some rule ->
+        embedded_layers ~rule ~content ~queries ~depth ~within:(start_byte, end_byte) tree)
+  in
+  { start_byte; end_byte; tree; query; children }
+
+and embedded_layers ~rule ~content ~queries ~depth ~within tree =
+  let out = ref [] in
+  iter_nodes tree ~f:(fun node ->
+    if String.equal (Tree_sitter.Node.kind node) rule.Grammar.block
+    then
+      Option.iter
+        (embedded_layer ~rule ~content ~queries ~depth ~within node)
+        ~f:(fun l -> out := l :: !out));
+  List.sort !out ~compare:(fun a b -> Int.compare a.start_byte b.start_byte)
+
+(* One block node -> a child layer, if it names a language we have a grammar
+   for. None covers every ordinary miss: an unlabelled fence (no info child),
+   an unknown language, a range that does not shrink, and — via [try_with] —
+   a grammar or query that fails to load, which must cost this block alone
+   and not the file. *)
+and embedded_layer ~rule ~content ~queries ~depth ~within node =
   let open Option.Let_syntax in
   let%bind info_node = child_of_kind node ~kind:rule.Grammar.info in
   let%bind code_node = child_of_kind node ~kind:rule.Grammar.content in
   let%bind ext, { Grammar_registry.language; highlights_query } =
     Grammar.find_embedded (node_text content info_node)
+  in
+  let start_byte = Tree_sitter.Node.start_byte code_node in
+  let end_byte = Tree_sitter.Node.end_byte code_node in
+  let within_start, within_end = within in
+  (* Strictly inside the enclosing layer. A grammar reporting a degenerate or
+     full-width range would otherwise have a layer contain itself, and the
+     recursion would not terminate. *)
+  let%bind () =
+    Option.some_if
+      (end_byte > start_byte
+       && start_byte >= within_start
+       && end_byte <= within_end
+       && (start_byte > within_start || end_byte < within_end))
+      ()
   in
   Option.try_with (fun () ->
     let lang = language () in
@@ -144,48 +204,29 @@ let injection_of_block ~rule ~content ~queries node =
         Tree_sitter.Query.create lang ~source:highlights_query)
     in
     let range =
-      { Tree_sitter.start_byte = Tree_sitter.Node.start_byte code_node
-      ; end_byte = Tree_sitter.Node.end_byte code_node
+      { Tree_sitter.start_byte
+      ; end_byte
       ; start_point = Tree_sitter.Node.start_point code_node
       ; end_point = Tree_sitter.Node.end_point code_node
       }
     in
-    { start_byte = range.Tree_sitter.start_byte
-    ; end_byte = range.Tree_sitter.end_byte
-    ; tree = parse_range ~lang ~content range
-    ; query
-    })
-;;
-
-(* Embedded-language regions: every block node the rule names, resolved to an
-   injection. Queries are cached PER BUILD, not in [query_cache] — this runs
-   in a separate domain (see [create]) and that cache is main-domain only. *)
-let injections ~rule ~content tree =
-  let queries = Hashtbl.create (module String) in
-  let out = ref [] in
-  iter_nodes tree ~f:(fun node ->
-    if String.equal (Tree_sitter.Node.kind node) rule.Grammar.block
-    then
-      Option.iter (injection_of_block ~rule ~content ~queries node) ~f:(fun i ->
-        out := i :: !out));
-  List.sort !out ~compare:(fun a b -> Int.compare a.start_byte b.start_byte)
+    build_layer ~ext ~lang ~query ~content ~range:(Some range) ~queries ~depth:(depth + 1))
 ;;
 
 let build ~ext ~language ~query content =
   try
-    let parser = Tree_sitter.Parser.create language in
-    let tree = Tree_sitter.Parser.parse_string parser content in
-    let injections =
-      match Grammar.injection_rule ext with
-      | None -> []
-      | Some rule -> (try injections ~rule ~content tree with _ -> [])
-    in
     Some
       { starts = line_starts content
       ; length = String.length content
-      ; tree
-      ; query
-      ; injections
+      ; root =
+          build_layer
+            ~ext
+            ~lang:language
+            ~query
+            ~content
+            ~range:None
+            ~queries:(Hashtbl.create (module String))
+            ~depth:0
       }
   with
   | _ -> None
@@ -235,8 +276,48 @@ module Window = struct
   ;;
 end
 
+(* Captures for [lo, hi) from [layer] and every layer nested inside it: one
+   ranged query per layer the window actually touches, so an off-screen code
+   block costs nothing.
+
+   A child layer OWNS its bytes, so the parent's captures are cut around it.
+   Markdown tags a whole [fenced_code_block] @text.literal — fences and body
+   alike — and the renderer resolves an overlap in favour of the span that
+   STARTS first, which is always the parent's. Leaving it would hide every
+   embedded span behind it. The fence delimiters, being outside the child's
+   range, keep their markdown styling. *)
+let rec captures layer ~lo ~hi =
+  if hi <= layer.start_byte || lo >= layer.end_byte
+  then []
+  else (
+    let lo = Int.max lo layer.start_byte in
+    let hi = Int.min hi layer.end_byte in
+    let live =
+      List.filter layer.children ~f:(fun c -> c.end_byte > lo && c.start_byte < hi)
+    in
+    let mine =
+      try Tree_sitter.highlight_range layer.query layer.tree ~start_byte:lo ~end_byte:hi with
+      | _ -> []
+    in
+    let mine =
+      if List.is_empty live
+      then mine
+      else
+        List.concat_map mine ~f:(fun (sb, eb, capture) ->
+          List.fold live ~init:[ sb, eb ] ~f:(fun pieces c ->
+            List.concat_map pieces ~f:(fun (ps, pe) ->
+              if c.end_byte <= ps || c.start_byte >= pe
+              then [ ps, pe ]
+              else
+                (if ps < c.start_byte then [ ps, c.start_byte ] else [])
+                @ if c.end_byte < pe then [ c.end_byte, pe ] else []))
+          |> List.map ~f:(fun (s, e) -> s, e, capture))
+    in
+    mine @ List.concat_map live ~f:(fun c -> captures c ~lo ~hi))
+;;
+
 (* Spans for lines [from_line .. to_line] (1-based, inclusive): ONE ranged
-   query over just those bytes, distributed per line. *)
+   query per layer over just those bytes, distributed per line. *)
 let window (t : t) ~from_line ~to_line : Window.t =
   match t with
   | None -> Window.empty
@@ -249,46 +330,7 @@ let window (t : t) ~from_line ~to_line : Window.t =
     else (
       let start_byte = s.starts.(from_line - 1) in
       let end_byte = line_end s (to_line - 1) in
-      let live =
-        List.filter s.injections ~f:(fun i ->
-          i.end_byte > start_byte && i.start_byte < end_byte)
-      in
-      let parent =
-        try Tree_sitter.highlight_range s.query s.tree ~start_byte ~end_byte with
-        | _ -> []
-      in
-      (* The parent grammar captures the whole block — markdown tags a
-         [fenced_code_block] @text.literal, fences and body alike — and the
-         renderer resolves an overlap in favour of the span that STARTS
-         first, which is always the parent's. So cut the injected ranges out
-         of the parent's captures: the fence delimiters keep their markdown
-         styling, the code between them belongs to its own grammar. *)
-      let parent =
-        if List.is_empty live
-        then parent
-        else
-          List.concat_map parent ~f:(fun (sb, eb, capture) ->
-            List.fold live ~init:[ sb, eb ] ~f:(fun pieces i ->
-              List.concat_map pieces ~f:(fun (ps, pe) ->
-                if i.end_byte <= ps || i.start_byte >= pe
-                then [ ps, pe ]
-                else
-                  (if ps < i.start_byte then [ ps, i.start_byte ] else [])
-                  @ if i.end_byte < pe then [ i.end_byte, pe ] else []))
-            |> List.map ~f:(fun (s, e) -> s, e, capture))
-      in
-      let injected =
-        List.concat_map live ~f:(fun i ->
-          try
-            Tree_sitter.highlight_range
-              i.query
-              i.tree
-              ~start_byte:(Int.max start_byte i.start_byte)
-              ~end_byte:(Int.min end_byte i.end_byte)
-          with
-          | _ -> [])
-      in
-      let triples = parent @ injected in
+      let triples = captures s.root ~lo:start_byte ~hi:end_byte in
       let out = Array.create ~len:(to_line - from_line + 1) [] in
       (* Distribute each capture to the lines it touches: the affected line
          range is two [line_of] lookups, per-line columns are clamps. The

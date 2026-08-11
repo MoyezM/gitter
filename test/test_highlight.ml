@@ -200,6 +200,25 @@ let () =
   check "md: fence inside a list item resolves" (has ~capture:"keyword" (line t 8))
 ;;
 
+(* Layers nest. A markdown block inside markdown is just another layer, so
+   the python inside IT highlights too — depth is not a special case. *)
+let () =
+  let md =
+    String.concat_lines
+      [ "````markdown"
+      ; "# Inner"
+      ; ""
+      ; "```python"
+      ; "def deep():"
+      ; "    return 1"
+      ; "```"
+      ; "````"
+      ]
+  in
+  let t = session ~path:"notes.md" md in
+  check "md: python nested two layers deep" (has ~capture:"keyword" (line t 5))
+;;
+
 (* An unknown fence language must not break the file — the rest still
    highlights, and the block is left to markdown. *)
 let () =

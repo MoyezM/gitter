@@ -5,7 +5,7 @@
  (preprocess
   (pps ppx_jane)))
 
-; Same flags as the shipped binary; see bin/dune, and test/dune for why the
-; static archives are not optional on Linux.
+; Same flags as the shipped binary; scripts/link-flags computes them, and
+; test/dune says why the static archives are not optional on Linux.
 (rule
  (copy ../bin/link_flags.sexp link_flags.sexp))

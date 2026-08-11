@@ -1,0 +1,61 @@
+#!/usr/bin/env bash
+# Prints the dune (link_flags ...) sexp for the platform we are building on.
+#
+# bin/dune runs this into link_flags.sexp and includes it; test/dune and
+# bench/dune copy that same file, so all three link identically — the tests
+# exercise the binary the release ships, not a differently linked one.
+#
+# It lives here rather than inline in bin/dune because the conditional has to
+# be a shell one — dune has no way to branch an action on an environment
+# variable — and a shell script squeezed onto one line inside a quoted dune
+# string is unreadable and impossible to run by hand. Run it directly to see
+# what a given environment produces:
+#
+#   GITTER_STATIC_LIB_DIR=/tmp/x scripts/link-flags
+#
+# Deliberately plain POSIX-ish bash: it also has to work under the /bin/bash
+# 3.2 that macOS ships, outside the nix shell.
+set -euo pipefail
+
+# Exported by both nix dev shells; a directory holding ONLY .a archives
+# (libvterm, sqlite3). Empty when building outside the shell, where linking
+# dynamically against whatever is installed is the right answer.
+static_dir="${GITTER_STATIC_LIB_DIR:-}"
+
+flags=""
+add() { flags="$flags $*"; }
+
+# Either linker prefers a shared library over an archive only WITHIN a
+# directory, so an archive-only directory first on the search path is what
+# pins both libraries to their static versions. Two reasons that matters:
+# the released binary must not reference /nix/store, and on Linux a
+# dynamically linked test cannot even start — an ELF records only a soname,
+# and nothing writes an RPATH in the #ci shell (it is mkShellNoCC, so there
+# is no nix cc-wrapper to add one).
+if [ -n "$static_dir" ]; then
+  add -ccopt "-L$static_dir"
+fi
+
+case "$(uname -s)" in
+  Darwin)
+    # Drops the dylib references the opam libraries still carry but that
+    # nothing in the link actually uses.
+    if [ -n "$static_dir" ]; then
+      add -cclib -Wl,-dead_strip_dylibs
+    fi
+    # The opam-switch objects target a newer macOS SDK than the nix clang
+    # links against, which costs one warning per object. Purely cosmetic,
+    # and macOS-only: GNU ld has no -w and rejects the option outright.
+    add -cclib -Wl,-w
+    ;;
+  Linux)
+    # The -dead_strip_dylibs analogue: drop DT_NEEDED entries nothing
+    # references.
+    if [ -n "$static_dir" ]; then
+      add -cclib -Wl,--as-needed
+    fi
+    ;;
+esac
+
+# Leading space stripped; empty flags must still print a well-formed ().
+printf '(%s)' "${flags# }"

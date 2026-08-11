@@ -106,4 +106,111 @@ let () =
       ())
 ;;
 
+(* --- markdown code-block injection ---------------------------------------
+   A fenced block with a language gets that language's grammar. The parent
+   markdown captures the whole block, so the check that matters is that the
+   BODY is owned by the embedded grammar, not that some span exists. *)
+let () =
+  let md =
+    String.concat_lines
+      [ "# Title"
+      ; ""
+      ; "```python"
+      ; "def foo():"
+      ; "    return True"
+      ; "```"
+      ; ""
+      ; "```"
+      ; "def foo():"
+      ; "```"
+      ]
+  in
+  let t = session ~path:"notes.md" md in
+  check "md: session exists" (not (H.is_empty t));
+  (* line 4 is "def foo():" inside the python fence *)
+  check "md: python keyword inside the fence" (has ~capture:"keyword" (line t 4));
+  check "md: python function name inside the fence" (has ~capture:"function" (line t 4));
+  (* line 5 "    return True" — a keyword the markdown grammar cannot produce *)
+  check "md: python keyword on the fence's second line" (has ~capture:"keyword" (line t 5));
+  (* An UNLABELLED fence must stay markdown-only: same text, line 9. *)
+  check
+    "md: unlabelled fence gets no python"
+    (not (has ~capture:"keyword" (line t 9)));
+  (* Prose outside the fence is still markdown. *)
+  check "md: heading still highlighted" (not (List.is_empty (line t 1)));
+  (* Clipping: markdown tags the whole fenced_code_block @text.literal, and
+     the renderer awards an overlap to whichever span starts first. If that
+     capture were left spanning the body, it would start at column 0 and
+     swallow every python span behind it. It must be gone from the body... *)
+  check
+    "md: parent block capture is clipped out of the body"
+    (not (has ~capture:"text.literal" (line t 4)));
+  (* ...but NOT from the fence line itself, which markdown still owns. *)
+  check "md: fence line keeps markdown styling" (not (List.is_empty (line t 3)))
+;;
+
+(* TWO different languages in one document, checked against ground truth.
+   "some keyword capture exists" is too weak to be worth writing: a block
+   highlighted with the WRONG language's query still produces keywords, at
+   valid positions, with meaningless names. The invariant that actually holds
+   is that a fenced block highlights exactly as the same code would in a file
+   of that language — which also proves the parent's block capture was
+   clipped out of the body. *)
+let () =
+  let rs = "pub fn evict(&mut self) -> usize {\n    let n = 1;\n    n\n}\n" in
+  let md =
+    String.concat_lines
+      ([ "```python"; "def foo():"; "    return 1"; "```"; ""; "```rust" ]
+       @ String.split_lines rs
+       @ [ "```" ])
+  in
+  let injected = session ~path:"notes.md" md in
+  let standalone = session ~path:"x.rs" rs in
+  let caps t n =
+    line t n
+    |> List.map ~f:(fun (s : H.Span.t) -> s.start_col, s.end_col, s.capture)
+    |> List.sort ~compare:Poly.compare
+  in
+  (* The rust body starts at md line 7 and at standalone line 1. *)
+  List.iteri (String.split_lines rs) ~f:(fun i _ ->
+    check
+      (sprintf "md: rust body line %d identical to standalone" (i + 1))
+      ([%equal: (int * int * string) list] (caps injected (7 + i)) (caps standalone (1 + i))))
+;;
+
+(* Shapes real documents actually contain: a fence carrying attributes after
+   the language, and a fence indented inside a list item (where the grammar
+   interleaves block_continuation nodes through the content). *)
+let () =
+  let md =
+    String.concat_lines
+      [ "```python title=\"example.py\""
+      ; "def foo():"
+      ; "```"
+      ; ""
+      ; "- a list item:"
+      ; ""
+      ; "  ```rust"
+      ; "  fn main() {}"
+      ; "  ```"
+      ]
+  in
+  let t = session ~path:"notes.md" md in
+  check "md: fence with attributes still resolves" (has ~capture:"keyword" (line t 2));
+  check "md: fence inside a list item resolves" (has ~capture:"keyword" (line t 8))
+;;
+
+(* An unknown fence language must not break the file — the rest still
+   highlights, and the block is left to markdown. *)
+let () =
+  let md =
+    String.concat_lines
+      [ "```nosuchlang"; "def foo():"; "```"; ""; "```py"; "def bar():"; "```" ]
+  in
+  let t = session ~path:"notes.md" md in
+  check "md: unknown fence language is inert" (not (has ~capture:"keyword" (line t 2)));
+  (* "py" is the extension spelling and must work as well as "python". *)
+  check "md: extension-spelled fence works" (has ~capture:"keyword" (line t 6))
+;;
+
 let () = print_endline "All highlight tests passed."

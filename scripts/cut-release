@@ -1,0 +1,254 @@
+#!/usr/bin/env bash
+# Tag origin/main and push the tag, which is what starts a release
+# (.github/workflows/release.yml triggers on v*).
+#
+#   scripts/cut-release              # next patch after the newest tag
+#   scripts/cut-release minor        # or: patch | major
+#   scripts/cut-release v0.2.0       # or an exact version
+#
+#   --dry-run     print the plan and stop; creates and pushes nothing
+#   --wait        if CI on main is still running, wait for it instead of
+#                 refusing — main is usually green a few minutes after a merge
+#   --yes         skip the confirmation prompt (for automation)
+#   --watch       follow the release run after pushing
+#   --allow-red   tag even though CI is not green on that commit
+#
+# It tags whatever origin/main points at RIGHT NOW, fetched fresh. Your
+# current branch, your working tree and any local main are all irrelevant —
+# nothing here reads them, so it is safe to run from a feature branch or a
+# worktree, which is the normal case here. Nothing is checked out, moved or
+# modified; the only side effects are one tag and one push.
+#
+# The interesting guard is the CI one. A tag push goes straight to building
+# and publishing a public release, and a red main produces either a failed
+# release or, worse, a broken published binary. So the commit must have a
+# green build-test check — the same context branch protection requires —
+# before this will push anything.
+set -euo pipefail
+
+die() { printf 'error: %s\n' "$1" >&2; shift; [ $# -eq 0 ] || printf '  %s\n' "$@" >&2; exit 1; }
+note() { printf '%s\n' "$*"; }
+
+bump=patch
+explicit=""
+dry_run=0
+assume_yes=0
+watch=0
+wait_ci=0
+allow_red=0
+
+while [ $# -gt 0 ]; do
+  case "$1" in
+    patch|minor|major) bump="$1"; shift ;;
+    v[0-9]*)           explicit="$1"; shift ;;
+    --dry-run)         dry_run=1; shift ;;
+    --wait)            wait_ci=1; shift ;;
+    --yes|-y)          assume_yes=1; shift ;;
+    --watch)           watch=1; shift ;;
+    --allow-red)       allow_red=1; shift ;;
+    # the header comment IS the help text — print it rather than restating it
+    -h|--help) awk 'NR > 1 && /^#/ { sub(/^# ?/, ""); print; next } NR > 1 { exit }' "$0"; exit 0 ;;
+    [0-9]*) die "version must start with 'v' (got '$1' — did you mean v$1?)" \
+                "release.yml only triggers on tags matching v*" ;;
+    *) die "unknown argument: $1 (try --help)" ;;
+  esac
+done
+
+command -v git >/dev/null || die "git not found"
+
+# --- what are we tagging -----------------------------------------------------
+# Fetch rather than trust a local ref: a stale origin/main would silently tag
+# an old commit. FETCH_HEAD is then exactly what the remote's main is now.
+note "== fetching origin"
+git fetch --quiet origin main --tags || die "could not fetch origin"
+sha="$(git rev-parse FETCH_HEAD)"
+subject="$(git log -1 --format=%s "$sha")"
+author="$(git log -1 --format='%an, %ar' "$sha")"
+
+# --- what are we calling it --------------------------------------------------
+# Newest by version order, not by date: a hotfix tagged late must not decide
+# what "latest" means.
+prev="$(git tag --list 'v[0-9]*' --sort=-v:refname | head -n 1)"
+
+if [ -n "$explicit" ]; then
+  tag="$explicit"
+else
+  [ -n "$prev" ] || die "no existing v* tag to bump from" \
+                        "pass an explicit version, e.g. scripts/cut-release v0.1.0"
+  rest="${prev#v}"
+  major="${rest%%.*}"
+  minor="${rest#*.}"; minor="${minor%%.*}"
+  patch="${rest##*.}"
+  case "$major$minor$patch" in
+    *[!0-9]*) die "latest tag '$prev' is not vMAJOR.MINOR.PATCH — pass a version explicitly" ;;
+  esac
+  case "$bump" in
+    major) major=$((major + 1)); minor=0; patch=0 ;;
+    minor) minor=$((minor + 1)); patch=0 ;;
+    patch) patch=$((patch + 1)) ;;
+  esac
+  tag="v$major.$minor.$patch"
+fi
+
+# install.sh builds asset names as gitter-$tag-$platform.tar.gz, and
+# release.yml only fires on v*, so a tag shaped differently silently does
+# nothing at all.
+case "$tag" in
+  v[0-9]*) ;;
+  *) die "tag must start with v followed by a digit (got '$tag')" ;;
+esac
+
+git rev-parse -q --verify "refs/tags/$tag" >/dev/null \
+  && die "tag $tag already exists locally" "delete it first: git tag -d $tag"
+[ -z "$(git ls-remote --tags origin "refs/tags/$tag")" ] \
+  || die "tag $tag already exists on origin" "releases are immutable; pick the next version"
+
+# --- is main green -----------------------------------------------------------
+# Reports one of: success | pending | none | no-gh | <a failing conclusion>.
+# build-test is the aggregate context branch protection requires — green only
+# when every matrix leg and every other required job passed — so it is the
+# only check worth asking about. It does not exist until its dependencies
+# finish, and "not there yet" must not read the same as "never ran".
+# Sets CI_STATE and, while pending, CI_OUTSTANDING (the checks not yet done)
+# so the waiting loop can say what it is waiting ON without a second API call.
+ci_state() {
+  local runs state
+  CI_OUTSTANDING=""
+  command -v gh >/dev/null 2>&1 || { CI_STATE=no-gh; return; }
+  runs="$(gh api "repos/{owner}/{repo}/commits/$sha/check-runs" --paginate \
+            -q '.check_runs[] | .name + "\t" + (.conclusion // .status)' 2>/dev/null)" \
+    || { CI_STATE=no-gh; return; }
+
+  state="$(printf '%s\n' "$runs" | awk -F'\t' '$1 == "build-test" { print $2; exit }')"
+  case "$state" in
+    success)                CI_STATE=success; return ;;
+    queued|in_progress|"")  ;;                        # fall through to the sweep
+    *)                      CI_STATE="$state"; return ;;  # failure, cancelled, ...
+  esac
+
+  # No verdict from the aggregate yet: still running, or nothing ran at all.
+  CI_OUTSTANDING="$(printf '%s\n' "$runs" \
+    | awk -F'\t' '$2 == "queued" || $2 == "in_progress" { printf "%s%s", sep, $1; sep = ", " }')"
+  if [ -n "$CI_OUTSTANDING" ]; then
+    CI_STATE=pending
+  elif [ -n "$runs" ]; then
+    CI_STATE=pending                     # aggregate has not started yet
+    CI_OUTSTANDING="build-test"
+  else
+    CI_STATE=none
+  fi
+}
+
+ci_state
+ci="$CI_STATE"
+
+# Waiting is what makes "cut a release" a single command rather than a thing
+# you come back to. It reports what it is blocked on and keeps a clock on
+# screen: a cold Linux runner takes ~40min to build the OxCaml toolchain, and
+# a silent cursor for that long is indistinguishable from a hung script.
+if [ "$ci" = pending ] && [ "$wait_ci" -eq 1 ]; then
+  wait_started="$(date +%s)"
+  note "== waiting for CI on $(git rev-parse --short "$sha") (Ctrl-C to give up)"
+  note "   a first Linux build on main is cold and takes ~40min; later ones are minutes"
+  while :; do
+    mins=$(( ( $(date +%s) - wait_started ) / 60 ))
+    # \r so this stays one updating line rather than scrolling forever
+    printf '\r   [%3dm] waiting on: %-60.60s' "$mins" "$CI_OUTSTANDING"
+    sleep 20
+    ci_state
+    ci="$CI_STATE"
+    if [ "$ci" != pending ]; then printf '\r%-80s\r' ' '; break; fi
+    if [ "$mins" -ge 90 ]; then
+      printf '\n'
+      note "   gave up after 90 minutes; CI is still '$ci'"
+      break
+    fi
+  done
+  [ "$ci" = success ] && note "== CI is green after ${mins}m"
+fi
+
+case "$ci" in
+  success) ;;
+  *)
+    if [ "$allow_red" -eq 1 ]; then
+      note "!! build-test on $(git rev-parse --short "$sha") is '$ci' — continuing anyway (--allow-red)"
+    else
+      case "$ci" in
+        pending) die "CI on origin/main has not finished yet" \
+                     "re-run with --wait to sit here until it does" ;;
+        none)    die "no CI has run on origin/main at all ($(git rev-parse --short "$sha"))" \
+                     "that is unexpected — check the workflow before releasing" ;;
+        no-gh)   die "gh is not available, so CI state cannot be checked" \
+                     "install gh, or accept the risk with --allow-red" ;;
+        *)       die "build-test on origin/main is '$ci', not success" \
+                     "a tag push publishes a release straight from this commit" \
+                     "fix main first, or override with --allow-red" ;;
+      esac
+    fi
+    ;;
+esac
+
+# --- show the plan -----------------------------------------------------------
+cat <<EOF
+
+  tag      $tag${prev:+  (previous: $prev)}
+  commit   $(git rev-parse --short "$sha")  $subject
+  author   $author
+  ci       build-test: $ci
+
+EOF
+
+if [ -n "$prev" ]; then
+  count="$(git rev-list --count "$prev..$sha" 2>/dev/null || echo '?')"
+  note "$count commit(s) since $prev:"
+  git log --oneline --no-decorate "$prev..$sha" 2>/dev/null | sed 's/^/  /' | head -30
+  [ "$count" != "?" ] && [ "$count" -gt 30 ] && note "  ... and $((count - 30)) more"
+  echo
+fi
+
+if [ "$dry_run" -eq 1 ]; then
+  note "== dry run, stopping here"
+  note "   would run: git tag -a $tag $(git rev-parse --short "$sha") && git push origin refs/tags/$tag"
+  exit 0
+fi
+
+# --- confirm and push --------------------------------------------------------
+if [ "$assume_yes" -eq 0 ]; then
+  [ -t 0 ] || [ -r /dev/tty ] \
+    || die "not a terminal and --yes not given — refusing to publish unattended"
+  printf 'push %s and start a release? [y/N] ' "$tag"
+  read -r reply < /dev/tty
+  case "$reply" in
+    y|Y|yes|YES) ;;
+    *) note "aborted; nothing was tagged"; exit 1 ;;
+  esac
+fi
+
+# Annotated, and pointed at an explicit sha — never at HEAD, which is the
+# whole point of this script.
+git tag -a "$tag" "$sha" -m "$tag"
+if ! git push origin "refs/tags/$tag"; then
+  git tag -d "$tag" >/dev/null
+  die "push failed; removed the local tag so a retry starts clean"
+fi
+
+note ""
+note "pushed $tag -> $(git rev-parse --short "$sha")"
+
+slug="$(gh repo view --json nameWithOwner -q .nameWithOwner 2>/dev/null || echo '')"
+if [ -n "$slug" ]; then
+  note "  actions   https://github.com/$slug/actions/workflows/release.yml"
+  note "  release   https://github.com/$slug/releases/tag/$tag"
+fi
+
+if [ "$watch" -eq 1 ] && command -v gh >/dev/null 2>&1; then
+  note ""
+  note "== waiting for the release run to appear"
+  for _ in $(seq 1 30); do
+    run="$(gh run list --workflow release.yml --limit 1 --json databaseId,headBranch \
+             -q "first(.[] | select(.headBranch == \"$tag\") | .databaseId)" 2>/dev/null || true)"
+    [ -n "$run" ] && break
+    sleep 2
+  done
+  [ -n "${run:-}" ] && gh run watch "$run" || note "   (no run picked it up yet — check the actions link above)"
+fi

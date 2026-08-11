@@ -12,7 +12,7 @@ on:
   pull_request:
 
 jobs:
-  build-test:
+  build:
     # All three published platforms. ubuntu-22.04 rather than -latest on
     # purpose: its glibc 2.35 is the floor the release binaries inherit, so
     # CI builds against exactly what release.yml ships. Every cache key below
@@ -76,3 +76,29 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - run: ./scripts/check-platforms
+
+  # The one context branch protection requires (.github/rulesets/main.json).
+  # A matrix job does not report its own name — it reports "build (macos-15)"
+  # and friends — so requiring the matrix directly would mean re-applying the
+  # ruleset every time the platform list changes, and a ruleset naming a job
+  # that no longer exists blocks every PR forever with "Expected — waiting for
+  # status to be reported". Aggregating keeps the required context fixed while
+  # the matrix underneath is free to change.
+  build-test:
+    needs: [build, platforms-agree]
+    # always(), plus an explicit look at each result: without it this job is
+    # SKIPPED when a dependency fails, and GitHub counts a skipped required
+    # check as satisfied — which would let a red PR merge.
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - name: require every job to have succeeded
+        env:
+          RESULTS: build=${{ needs.build.result }} platforms-agree=${{ needs.platforms-agree.result }}
+        run: |
+          echo "$RESULTS"
+          case "$RESULTS" in
+            *failure*|*cancelled*|*skipped*)
+              echo "FAIL: not every required job succeeded" >&2
+              exit 1 ;;
+          esac

@@ -66,3 +66,13 @@ jobs:
 
       - name: build and test
         run: nix develop path:.#ci -c dune build bin/main.exe @runtest
+
+  # Seconds, and guards a failure mode nothing else catches: the published
+  # platform list is spelled out in three files that cannot share code, and
+  # when they drift the release still succeeds — users just 404 on an asset
+  # that was never built. See scripts/check-platforms.
+  platforms-agree:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: ./scripts/check-platforms

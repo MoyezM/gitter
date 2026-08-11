@@ -71,81 +71,24 @@ jobs:
           path: ~/.opam
           key: opam-v3-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('gitter.opam', 'scripts/bootstrap', 'flake.lock') }}
 
-      - name: build release binary
-        run: GITTER_VERSION=${{ inputs.version || github.ref_name }} nix develop path:.#ci -c dune build --profile release bin/main.exe
-
-      - name: prepare artifact
-        run: |
-          mkdir dist
-          # install -m, not cp: dune write-protects _build outputs, and a
-          # read-only copy makes the in-place strip fail
-          install -m 755 _build/default/bin/main.exe dist/gitter
-          cp LICENSE README.md dist/
-
-      # Portable means: nothing dynamically linked outside the platform's own
-      # system directories. A /nix/store path would make the binary useless
-      # off the build machine.
-      - name: portability gate (macOS)
-        if: runner.os == 'macOS'
-        run: |
-          if otool -L dist/gitter | grep -q '/nix/store'; then
-            echo 'FAIL: binary references /nix/store:' >&2
-            otool -L dist/gitter >&2
-            exit 1
-          fi
-          otool -L dist/gitter
-
-      - name: portability gate (Linux)
-        if: runner.os == 'Linux'
-        run: |
-          if ldd dist/gitter | grep -q '/nix/store'; then
-            echo 'FAIL: binary references /nix/store:' >&2
-            ldd dist/gitter >&2
-            exit 1
-          fi
-          # ldd resolves against THIS machine, so a baked-in RUNPATH into the
-          # nix store can look fine here and break everywhere else. Check the
-          # dynamic section directly.
-          if readelf -d dist/gitter | grep -E 'RUNPATH|RPATH' | grep -q '/nix/store'; then
-            echo 'FAIL: binary has a /nix/store RUNPATH:' >&2
-            readelf -d dist/gitter >&2
-            exit 1
-          fi
-          ldd dist/gitter
-
-      - name: strip and re-sign (macOS)
-        if: runner.os == 'macOS'
-        run: |
-          # strip invalidates the linker's ad-hoc signature, and arm64 macOS
-          # refuses to run unsigned binaries — re-sign ad hoc after stripping.
-          strip dist/gitter
-          codesign -f -s - dist/gitter
-
-      - name: strip (Linux)
-        if: runner.os == 'Linux'
-        run: strip dist/gitter
-
-      - name: smoke test
-        env:
-          TAG: ${{ inputs.version || github.ref_name }}
-        run: |
-          out="$(./dist/gitter -version)"
-          echo "$out"
-          case "$out" in
-            *"$TAG"*) ;;
-            *) echo "FAIL: -version output does not contain $TAG" >&2; exit 1 ;;
-          esac
-
-      - name: package
-        env:
-          TAG: ${{ inputs.version || github.ref_name }}
-          PLATFORM: ${{ matrix.platform }}
-        run: tar czf "gitter-${TAG}-${PLATFORM}.tar.gz" -C dist gitter LICENSE README.md
+      # ONE implementation of the release recipe, shared with local builds.
+      # scripts/build-release resolves the platform from uname, builds in the
+      # #ci shell, runs the portability gate for this object format, strips
+      # (and ad-hoc re-signs on macOS), checks the version stamp and writes
+      # the tarball. Everything platform-specific lives in that script rather
+      # than being spelled out again here in YAML: a second copy of the recipe
+      # is a copy that drifts, and the script is the thing you can run locally
+      # to reproduce what shipped.
+      - name: build, gate and package
+        run: ./scripts/build-release --version "${{ inputs.version || github.ref_name }}" --tarball
 
       - uses: actions/upload-artifact@v4
         with:
           name: tarball-${{ matrix.platform }}
-          path: gitter-*.tar.gz
+          # build-release also writes a single-entry dist/checksums.txt; the
+          # publish job recomputes one combined file across every platform, so
+          # only the tarball travels.
+          path: dist/gitter-*.tar.gz
           if-no-files-found: error
 
   # One release, one checksums.txt. Each build leg publishing its own would

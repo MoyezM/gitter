@@ -5,14 +5,7 @@
  (preprocess
   (pps ppx_jane)))
 
-; -Wl,-w silences the SDK-version ld warning flood, and is macOS-only: GNU
-; ld has no -w and rejects the option outright, so Linux links with none.
+; Same flags as the shipped binary; see bin/dune, and test/dune for why the
+; static archives are not optional on Linux.
 (rule
- (targets link_flags.sexp)
- (action
-  (with-stdout-to
-   %{targets}
-   (run
-    bash
-    -c
-    "if [ \"$(uname -s)\" = Darwin ]; then printf '(-cclib -Wl,-w)'; else printf '()'; fi"))))
+ (copy ../bin/link_flags.sexp link_flags.sexp))

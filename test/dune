@@ -6,14 +6,12 @@
  (preprocess
   (pps ppx_jane)))
 
-; -Wl,-w silences the SDK-version ld warning flood, and is macOS-only: GNU
-; ld has no -w and rejects the option outright, so Linux links with none.
+; Link exactly like the shipped binary — see bin/dune for what these flags
+; are and why. Tests MUST get the static archives too on Linux: an ELF
+; records no absolute path for its libraries, and with no nix cc-wrapper in
+; the #ci shell nothing writes an RPATH, so a dynamically linked
+; test_terminal dies at startup with "libvterm.so.0: cannot open shared
+; object file". Mach-O has no such problem — a dylib carries its own
+; install_name — which is why macOS never needed this.
 (rule
- (targets link_flags.sexp)
- (action
-  (with-stdout-to
-   %{targets}
-   (run
-    bash
-    -c
-    "if [ \"$(uname -s)\" = Darwin ]; then printf '(-cclib -Wl,-w)'; else printf '()'; fi"))))
+ (copy ../bin/link_flags.sexp link_flags.sexp))

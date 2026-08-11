@@ -8,6 +8,15 @@ name: release
 on:
   push:
     tags: ['v*']
+  # Dry run: builds, gates and packages both platforms and uploads the
+  # tarballs as workflow artifacts, but publishes nothing — the publish job
+  # (and therefore the tap jobs, which need it) is gated on the tag push.
+  # Lets the whole artifact pipeline be exercised without burning a version.
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'version stamped into the dry-run binaries'
+        default: v0.0.0-dryrun
 
 jobs:
   build:
@@ -61,7 +70,7 @@ jobs:
           key: opam-v3-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('gitter.opam', 'scripts/bootstrap', 'flake.lock') }}
 
       - name: build release binary
-        run: GITTER_VERSION=${{ github.ref_name }} nix develop path:.#ci -c dune build --profile release bin/main.exe
+        run: GITTER_VERSION=${{ inputs.version || github.ref_name }} nix develop path:.#ci -c dune build --profile release bin/main.exe
 
       - name: prepare artifact
         run: |
@@ -116,7 +125,7 @@ jobs:
 
       - name: smoke test
         env:
-          TAG: ${{ github.ref_name }}
+          TAG: ${{ inputs.version || github.ref_name }}
         run: |
           out="$(./dist/gitter -version)"
           echo "$out"
@@ -127,7 +136,7 @@ jobs:
 
       - name: package
         env:
-          TAG: ${{ github.ref_name }}
+          TAG: ${{ inputs.version || github.ref_name }}
           PLATFORM: ${{ matrix.platform }}
         run: tar czf "gitter-${TAG}-${PLATFORM}.tar.gz" -C dist gitter LICENSE README.md
 
@@ -142,6 +151,9 @@ jobs:
   # an entry for its asset in that file.
   publish:
     needs: build
+    # Never on a dry run — this is the step that creates the release, and
+    # update-tap/verify-* need it, so gating here gates all of them.
+    if: github.event_name == 'push'
     runs-on: ubuntu-latest
     permissions:
       contents: write

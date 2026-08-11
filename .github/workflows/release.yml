@@ -5,6 +5,14 @@
 # last and stays macOS-only (skipped when HOMEBREW_TAP_TOKEN is unset).
 name: release
 
+# Least privilege by default; the publish job overrides this with
+# contents: write, because it is the only one that creates anything.
+# Paired with persist-credentials: false on every checkout below — nothing
+# pushes with the job's GITHUB_TOKEN: the tap is cloned with its own token
+# and gh release download uses GH_TOKEN.
+permissions:
+  contents: read
+
 on:
   push:
     tags: ['v*']
@@ -37,6 +45,8 @@ jobs:
     timeout-minutes: 120
     steps:
       - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
 
       - uses: nixbuild/nix-quick-install-action@v35
 
@@ -113,7 +123,10 @@ jobs:
           sha256sum *.tar.gz > checksums.txt
           cat checksums.txt
 
-      - uses: softprops/action-gh-release@v2
+      # Pinned to a commit, not the mutable v2 tag: this is the one step with
+      # contents: write, and a tag can be repointed at any time by anyone who
+      # can push to that repo.
+      - uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2 (2.6.2)
         with:
           files: |
             gitter-*.tar.gz
@@ -144,6 +157,8 @@ jobs:
 
       - uses: actions/checkout@v4
         if: steps.guard.outputs.have_token == 'true'
+        with:
+          persist-credentials: false
 
       - name: download checksums
         if: steps.guard.outputs.have_token == 'true'
@@ -201,6 +216,8 @@ jobs:
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
       - name: install from the published release
         env:
           GITTER_VERSION: ${{ github.ref_name }}

@@ -3,8 +3,8 @@
 # Use it to reproduce a bug a tester hit against a published binary: same
 # profile, same static linking, same strip (+ ad-hoc re-sign on macOS).
 #
-# Builds whichever of the two published platforms you are standing on:
-# macos-arm64 or linux-x86_64.
+# Builds whichever of the three published platforms you are standing on:
+# macos-arm64, linux-x86_64 or linux-arm64.
 #
 #   scripts/build-release [options]
 #

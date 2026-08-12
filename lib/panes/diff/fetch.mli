@@ -9,11 +9,12 @@ open! Bonsai_term
     [t] — never write and stop early. *)
 
 type payload =
-  { document : Document.t
+  { source : Document.Source.t
+      (** the parsed diff plus the pre-image text, so revealing elided
+          context is a rebuild rather than another git call *)
   ; files : Git.Diff.File.t list
-      (** the parsed diff, kept for hunk staging (verbatim hunk bytes) *)
-  ; binary_only : bool
-      (** the diff had files but no textual hunks (binary or mode-only) *)
+      (** the parsed diff — how [Render.content] tells an empty diff from
+          a binary or mode-only one *)
   ; old_hl : Highlight.t (** HEAD-side session; [Highlight.empty] in phase one *)
   ; new_hl : Highlight.t (** worktree-side session; [Highlight.empty] in phase one *)
   }

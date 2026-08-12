@@ -5,7 +5,7 @@ open! Bonsai_term
 
 type content =
   [ `Message of string
-  | `Document of Document.t * Highlight.t * Highlight.t
+  | `Document of Document.Source.t * Highlight.t * Highlight.t
   ]
 
 (** Freshness owner: only a result tagged with the CURRENT selection key

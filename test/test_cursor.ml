@@ -7,25 +7,29 @@ module A = State.Action
 let check name cond = if not cond then failwithf "FAILED: %s" name ()
 
 (* A synthetic document: rule, 5 diff rows, rule, 5 diff rows. *)
-let line n = Document.Diff_line (Some n, Some n, Gitter.Git.Diff.Line.Context "x")
-let rule = Document.Hunk_header "@@ -1 +1 @@"
+(* [pos] is stamped by [Source.of_rows]. *)
+let row line = { Document.line; revealed = false; pos = 0 }
+let line n = row (Document.Diff_line (Some n, Some n, Gitter.Git.Diff.Line.Context "x"))
+let rule () = row (Document.Rule { hidden = 0; old_no = 1; new_no = 1; label = "@@ -1 +1 @@" })
 
-let doc =
-  Array.of_list
-    ([ rule ] @ List.init 5 ~f:line @ [ rule ] @ List.init 5 ~f:(fun i -> line (i + 5)))
-;;
+let rows = [ rule () ] @ List.init 5 ~f:line @ [ rule () ] @ List.init 5 ~f:(fun i -> line (i + 5))
+let doc = Document.Source.of_rows rows
 
 (* A long all-diff document for scroll tests. *)
-let many = Array.init 100 ~f:line
+let many = Document.Source.of_rows (List.init 100 ~f:line)
 let apply ?(height = 20) d model action = State.apply_action d model action ~height
-let at cursor = { Model.cursor; scroll = 0; pan = 0 }
+let at cursor = { Model.initial with Model.cursor }
+
+(* The state machine transitions a SOURCE; these fixtures have no elided
+   runs, so the document it builds is exactly the rows given. *)
+let built src = State.shown src Model.initial
 
 (* The effective cursor: fresh documents show the cursor on the first diff
    row, and motions start from what is shown. *)
 let () =
   check
     "fresh cursor normalizes to first diff row"
-    (State.effective_cursor doc Model.initial = 1);
+    (State.effective_cursor (built doc) Model.initial = 1);
   check "j from fresh moves from the ghost" ((apply doc Model.initial (A.Move 1)).cursor = 2);
   check "k from fresh clamps to first diff row" ((apply doc Model.initial (A.Move (-1))).cursor = 1)
 ;;
@@ -34,37 +38,37 @@ let () =
 let () =
   check "move forward over a rule" ((apply doc (at 5) (A.Move 1)).cursor = 7);
   check "move backward over a rule" ((apply doc (at 7) (A.Move (-1))).cursor = 5);
-  check "click lands on a diff row" ((apply doc (at 1) (A.Click 0)).cursor = 1);
-  check "click past the end clamps" ((apply doc (at 1) (A.Click 99)).cursor = 11);
-  let tail_rules = Array.append doc [| rule; rule |] in
+  check "click lands on a diff row" ((apply doc (at 1) (A.Click { row = 0; column = 0 })).cursor = 1);
+  check "click past the end clamps" ((apply doc (at 1) (A.Click { row = 99; column = 0 })).cursor = 11);
+  let tail_rules = Document.Source.of_rows (rows @ [ rule (); rule () ]) in
   check
     "click on trailing rules falls back to the last diff row"
-    ((apply tail_rules (at 1) (A.Click 13)).cursor = 11);
-  check "no diff rows: cursor stays put" ((apply [| rule; rule |] (at 1) (A.Move 1)).cursor = 1)
+    ((apply tail_rules (at 1) (A.Click { row = 13; column = 0 })).cursor = 11);
+  check "no diff rows: cursor stays put" ((apply (Document.Source.of_rows [ rule (); rule () ]) (at 1) (A.Move 1)).cursor = 1)
 ;;
 
 (* Following: the cursor stays within the margin of the viewport edges. *)
 let () =
   check
     "scrolls down to keep margin"
-    ((apply many { Model.cursor = 23; scroll = 5; pan = 0 } (A.Move 1)).scroll = 24 - (20 - 1 - 5));
+    ((apply many { Model.initial with Model.cursor = 23; scroll = 5 } (A.Move 1)).scroll = 24 - (20 - 1 - 5));
   check
     "scrolls up to keep margin"
-    ((apply many { Model.cursor = 7; scroll = 3; pan = 0 } (A.Move (-1))).scroll = 6 - 5);
+    ((apply many { Model.initial with Model.cursor = 7; scroll = 3 } (A.Move (-1))).scroll = 6 - 5);
   check
     "no scroll while inside margins"
-    ((apply many { Model.cursor = 10; scroll = 5; pan = 0 } (A.Move 1)).scroll = 5);
+    ((apply many { Model.initial with Model.cursor = 10; scroll = 5 } (A.Move 1)).scroll = 5);
   (* Tiny panes shrink the margin instead of pinning the cursor off-screen. *)
-  let m = apply ~height:5 many { Model.cursor = 49; scroll = 47; pan = 0 } (A.Move 1) in
+  let m = apply ~height:5 many { Model.initial with Model.cursor = 49; scroll = 47 } (A.Move 1) in
   check "tiny pane keeps cursor visible" (m.scroll = 48 && m.cursor = 50);
-  let m = apply ~height:1 many { Model.cursor = 7; scroll = 7; pan = 0 } (A.Move 1) in
+  let m = apply ~height:1 many { Model.initial with Model.cursor = 7; scroll = 7 } (A.Move 1) in
   check "one-row pane pins scroll to cursor" (m.scroll = 8 && m.cursor = 8)
 ;;
 
 (* Wheel: flat 3-row steps of the VIEW (velocity comes from the terminal's
    event rate); the cursor never moves — off-screen if need be. *)
 let () =
-  let m0 = { Model.cursor = 0; scroll = 0; pan = 0 } in
+  let m0 = { Model.initial with Model.cursor = 0; scroll = 0 } in
   let m1 = apply ~height:5 many m0 (A.Wheel 1) in
   check "wheel scrolls the view 3 rows" (m1.scroll = 3);
   check "wheel leaves the cursor put" (m1.cursor = 0);
@@ -79,14 +83,14 @@ let () =
 (* Empty documents (binary-only diffs): every action is total — queued
    events can arrive against [||] and must not raise. *)
 let () =
-  let empty : Document.t = [||] in
+  let empty = Document.Source.of_rows [] in
   List.iter
     [ A.Move 1
     ; A.Move (-1)
     ; A.Half_page 1
     ; A.Wheel 1
     ; A.Wheel (-1)
-    ; A.Click 0
+    ; A.Click { row = 0; column = 0 }
     ; A.Reveal
     ; A.Reset
     ]
@@ -100,8 +104,9 @@ let () =
 let () =
   check
     "off-screen cursor is not relocated"
-    (State.effective_cursor many { Model.cursor = 90; scroll = 0; pan = 0 } = 90);
-  let m = apply ~height:5 many { Model.cursor = 90; scroll = 0; pan = 0 } (A.Move 1) in
+    (let m = { Model.initial with Model.cursor = 90 } in
+     State.effective_cursor (built many) m = 90);
+  let m = apply ~height:5 many { Model.initial with Model.cursor = 90; scroll = 0 } (A.Move 1) in
   check "move starts from the real cursor" (m.cursor = 91);
   check "move reveals the cursor" (m.scroll <= m.cursor && m.cursor < m.scroll + 5)
 ;;
@@ -109,20 +114,20 @@ let () =
 (* Reset; Click is an ABSOLUTE document row (the handler maps the clicked
    viewport row through the scroll it painted with). *)
 let () =
-  let r = apply many { Model.cursor = 42; scroll = 40; pan = 0 } A.Reset in
+  let r = apply many { Model.initial with Model.cursor = 42; scroll = 40 } A.Reset in
   check "reset" (r.cursor = 0 && r.scroll = 0);
-  let m = apply ~height:50 many { Model.cursor = 99; scroll = 95; pan = 0 } (A.Click 60) in
+  let m = apply ~height:50 many { Model.initial with Model.cursor = 99; scroll = 95 } (A.Click { row = 60; column = 0 }) in
   check "click is an absolute document row" (m.cursor = 60)
 ;;
 
 (* Reveal: after a doc replacement the kept cursor re-snaps into the new
    document and the view moves only if needed to show it. *)
 let () =
-  let short = Array.init 12 ~f:line in
-  let m = apply ~height:5 short { Model.cursor = 90; scroll = 0; pan = 0 } A.Reveal in
+  let short = Document.Source.of_rows (List.init 12 ~f:line) in
+  let m = apply ~height:5 short { Model.initial with Model.cursor = 90; scroll = 0 } A.Reveal in
   check "reveal snaps a beyond-doc cursor" (m.cursor = 11);
   check "reveal shows the snapped cursor" (m.scroll <= m.cursor && m.cursor < m.scroll + 5);
-  let m = apply ~height:5 many { Model.cursor = 4; scroll = 2; pan = 0 } A.Reveal in
+  let m = apply ~height:5 many { Model.initial with Model.cursor = 4; scroll = 2 } A.Reveal in
   check "reveal is a no-op for a visible cursor" (m.cursor = 4 && m.scroll = 2)
 ;;
 
@@ -130,8 +135,8 @@ let () =
    pinned at zero for short lines; motions preserve it, Reset clears it. *)
 let () =
   let wide =
-    Array.of_list
-      [ rule; Document.Diff_line (Some 1, Some 1, Gitter.Git.Diff.Line.Context (String.make 100 'x')) ]
+    Document.Source.of_rows
+      [ rule (); row (Document.Diff_line (Some 1, Some 1, Gitter.Git.Diff.Line.Context (String.make 100 'x'))) ]
   in
   let m1 = apply wide Model.initial (A.Pan 1) in
   check "pan steps right" (m1.pan = 4);
@@ -141,19 +146,6 @@ let () =
   check "short lines don't pan" ((apply many Model.initial (A.Pan 1)).pan = 0);
   check "motion preserves pan" ((apply wide m1 (A.Move 1)).pan = 4);
   check "reset clears pan" ((apply wide m1 A.Reset).pan = 0)
-;;
-
-(* hunk_at: which (file, hunk) encloses a row — drives hunk staging. *)
-let () =
-  let fh = Document.File_header "f" in
-  let d = Array.of_list ([ rule; line 1; line 2; rule; line 3 ] : Document.line list) in
-  check "row in first hunk" ([%equal: (int * int) option] (Document.hunk_at d ~row:1) (Some (0, 0)));
-  check "header row belongs to its hunk" ([%equal: (int * int) option] (Document.hunk_at d ~row:3) (Some (0, 1)));
-  check "row in second hunk" ([%equal: (int * int) option] (Document.hunk_at d ~row:4) (Some (0, 1)));
-  let multi = Array.of_list [ fh; rule; line 1; fh; rule; line 2 ] in
-  check "second file's hunk" ([%equal: (int * int) option] (Document.hunk_at multi ~row:5) (Some (1, 0)));
-  check "row above any hunk" (Option.is_none (Document.hunk_at (Array.of_list [ fh ]) ~row:0));
-  check "empty doc" (Option.is_none (Document.hunk_at [||] ~row:0))
 ;;
 
 let () = print_endline "All cursor tests passed."

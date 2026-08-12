@@ -177,6 +177,107 @@ let () =
 ;;
 
 
+(* Hunk spans: the @@ counts, and the count-zero convention. Boundaries
+   are what the diff pane measures elided runs against, so they are
+   pinned against real git output rather than derived from the body. *)
+let () =
+  let h1 = List.hd_exn (List.hd_exn files).hunks in
+  check "counts parsed" (h1.old_count = 6 && h1.new_count = 8);
+  check "span ends past the last line" (Diff.Hunk.old_after h1 = 16);
+  check "span starts after the line before" (Diff.Hunk.old_before h1 = 9);
+  (* Omitted counts mean 1. *)
+  let one =
+    String.concat_lines
+      [ "diff --git a/x b/x"; "--- a/x"; "+++ b/x"; "@@ -13 +13 @@"; "-a"; "+b" ]
+  in
+  (match Diff.parse one with
+   | [ { hunks = [ h ]; _ } ] ->
+     check "omitted count is 1" (h.old_count = 1 && h.new_count = 1);
+     check "omitted-count boundaries" (Diff.Hunk.old_after h = 14 && Diff.Hunk.old_before h = 12)
+   | _ -> check "omitted-count sample parses" false);
+  (* diff.context = 0 makes EVERY hunk a count-zero hunk. git anchors a
+     zero-count side AFTER the named line, which is the opposite of what
+     a body-derived extent assumes; the middle gap here is old [5,11] and
+     new [7,13], seven lines on both sides. *)
+  let ctx0 =
+    String.concat_lines
+      [ "diff --git a/f.txt b/f.txt"
+      ; "--- a/f.txt"
+      ; "+++ b/f.txt"
+      ; "@@ -4,0 +5,2 @@ c4"
+      ; "+NEW1"
+      ; "+NEW2"
+      ; "@@ -12,2 +13,0 @@ c11"
+      ; "-c12"
+      ; "-c13"
+      ]
+  in
+  (match Diff.parse ctx0 with
+   | [ { hunks = [ a; b ]; _ } ] ->
+     check "zero old count anchors after the line" (Diff.Hunk.old_after a = 5);
+     check "nonzero new count ends past its span" (Diff.Hunk.new_after a = 7);
+     check "nonzero old count starts after its predecessor" (Diff.Hunk.old_before b = 11);
+     check "zero new count ends at the line" (Diff.Hunk.new_before b = 13);
+     check
+       "both sides measure the gap the same"
+       (Diff.Hunk.old_before b - Diff.Hunk.old_after a
+        = Diff.Hunk.new_before b - Diff.Hunk.new_after a);
+     check "counts agree with the body" (Diff.Hunk.counts_agree a && Diff.Hunk.counts_agree b)
+   | _ -> check "context-0 sample parses" false);
+  (* A header that does not parse yields no hunk: anchoring it at a
+     guessed line 0 would make [raw] apply somewhere else entirely. *)
+  (match Diff.parse (String.concat_lines [ "diff --git a/x b/x"; "@@ junk @@"; " a" ]) with
+   | [ { hunks = []; _ } ] -> check "unparseable header drops the hunk" true
+   | _ -> check "unparseable header drops the hunk" false);
+  (* A body short of what the header promised is detectable — that is the
+     signal that disables context expansion instead of misnumbering it. *)
+  (match
+     Diff.parse
+       (String.concat_lines [ "diff --git a/x b/x"; "@@ -1,3 +1,3 @@"; " a"; "-b"; "+c" ])
+   with
+   | [ { hunks = [ h ]; _ } ] -> check "short body is caught" (not (Diff.Hunk.counts_agree h))
+   | _ -> check "short-body sample parses" false)
+;;
+
+(* diff.suppressBlankEmpty writes a blank context line as a ZERO-LENGTH
+   line instead of a lone space. Dropping it as junk shifts every
+   subsequent line number in the hunk. *)
+let () =
+  let sample =
+    String.concat_lines
+      [ "diff --git a/x b/x"; "--- a/x"; "+++ b/x"; "@@ -1,4 +1,4 @@"; " a"; ""; " c"; "-d"; "+D" ]
+  in
+  match Diff.parse sample with
+  | [ { hunks = [ h ]; _ } ] ->
+    check
+      "blank context line survives"
+      (List.equal Diff.Line.equal h.lines [ Context "a"; Context ""; Context "c"; Removed "d"; Added "D" ]);
+    check "counts still agree" (Diff.Hunk.counts_agree h);
+    check
+      "numbering is not shifted by the blank"
+      ([%equal: (int option * int option) list]
+         (List.map (Diff.Hunk.numbered h) ~f:(fun (o, n, _) -> o, n))
+         [ Some 1, Some 1; Some 2, Some 2; Some 3, Some 3; Some 4, None; None, Some 4 ])
+  | _ -> check "blank-line sample parses" false
+;;
+
+(* git does not quote spaces in the "diff --git" header, so splitting on
+   the last space turns a real path into a suffix of itself. *)
+let () =
+  let path text =
+    match Diff.parse (String.concat_lines [ text; "@@ -1 +1 @@"; "-a"; "+b" ]) with
+    | [ f ] -> f.path
+    | _ -> "<unparsed>"
+  in
+  check "plain path" (String.equal (path "diff --git a/lib/app.ml b/lib/app.ml") "lib/app.ml");
+  check
+    "path with a space"
+    (String.equal (path "diff --git a/docs/with space.md b/docs/with space.md") "docs/with space.md");
+  check
+    "rename keeps the b-side"
+    (String.equal (path "diff --git a/old name.ml b/new name.ml") "new name.ml")
+;;
+
 (* numstat: per-file counts, rename fields resolved to the new path,
    binary files dropped. *)
 let () =

@@ -11,7 +11,7 @@ let gutter_width = 12
 
 type content =
   [ `Message of string
-  | `Document of Document.t * Highlight.t * Highlight.t
+  | `Document of Document.Source.t * Highlight.t * Highlight.t
   ]
 
 (* What the pane should show. One arm owns freshness: only a result tagged
@@ -26,12 +26,11 @@ let content ~selection ~(result : Fetch.result) : content =
        (match r with
         | Error e -> `Message ("git error: " ^ Error.to_string_hum e)
         | Ok (payload : Fetch.payload) ->
-          if Array.is_empty payload.document
-          then
-            if payload.binary_only
-            then `Message "no text changes (binary or mode-only)"
-            else `Message "no changes vs HEAD"
-          else `Document (payload.document, payload.old_hl, payload.new_hl))
+          if List.is_empty payload.files
+          then `Message "no changes vs HEAD"
+          else if List.for_all payload.files ~f:(fun f -> List.is_empty f.hunks)
+          then `Message "no text changes (binary or mode-only)"
+          else `Document (payload.source, payload.old_hl, payload.new_hl))
      | Some _ | None -> `Message "loading diff...")
 ;;
 
@@ -122,17 +121,46 @@ let hunk_rule ~width header =
     ]
 ;;
 
-let render_line ~width ~old_spans ~new_spans ~cursor_here ~pan (line : Document.line) =
+(* The cursor lives in the gutter: highlighted, brightened numbers —
+   visible without fighting the row tints. *)
+let gutter_attrs ~cursor_here =
+  if cursor_here then [ Attr.fg Theme.text; Theme.selection_bg; Attr.bold ] else Theme.context
+;;
+
+(* A counted rule reads as a sibling of the plain one: real line numbers
+   in the columns that are for numbers, then the count and the label. *)
+let elided_row ~width ~cursor_here ~hidden ~old_no ~new_no ~label =
+  let count = sprintf " %d hidden " hidden in
+  let context = hunk_context label in
+  let context = if String.is_empty context then "" else context ^ " " in
+  View.hcat
+    [ seg (gutter_attrs ~cursor_here) (number (Some old_no) ^ number (Some new_no))
+    ; seg [ Attr.fg Theme.blue ] State.arrows
+    ; seg Theme.context (rule 2)
+    ; seg Theme.context count
+    ; seg (Attr.italic :: Theme.context) context
+    ; seg
+        Theme.context
+        (rule
+           (width
+            - (gutter_width - 2)
+            - State.arrows_cells
+            - 2
+            - String.length count
+            - String.length context))
+    ]
+;;
+
+let render_line ~width ~old_spans ~new_spans ~cursor_here ~pan ~revealed (line : Document.line) =
   match line with
   | File_header p -> seg Theme.header p
-  | Hunk_header h -> hunk_rule ~width h
+  (* A plain rule is the labeled divider the pane has always drawn; a
+     counted one carries the gutter numbers and the hidden count. *)
+  | Rule { hidden = 0; label; _ } -> hunk_rule ~width label
+  | Rule { hidden; old_no; new_no; label } ->
+    elided_row ~width ~cursor_here ~hidden ~old_no ~new_no ~label
   | Diff_line (old_no, new_no, line) ->
-    (* The cursor lives in the gutter: highlighted, brightened numbers —
-       visible without fighting the row tints. *)
-    let gutter_attrs =
-      if cursor_here then [ Attr.fg Theme.text; Theme.selection_bg; Attr.bold ] else Theme.context
-    in
-    let gutter = seg gutter_attrs (number old_no ^ number new_no) in
+    let gutter = seg (gutter_attrs ~cursor_here) (number old_no ^ number new_no) in
     let content_width = Int.max 1 (width - gutter_width) in
     (* Removed lines highlight from the HEAD blob; added/context from the
        worktree blob — the per-row span lists arrive pre-selected by side. *)
@@ -145,7 +173,12 @@ let render_line ~width ~old_spans ~new_spans ~cursor_here ~pan (line : Document.
         ( seg Theme.removed_bar "\u{258E} "
         , spans_view ~base:[ Attr.bg Theme.removed_bg ] ~spans:old_spans ~width:content_width ~pan s )
       | Context s ->
-        seg Theme.context "  ", spans_view ~base:[] ~spans:new_spans ~width:content_width ~pan s
+        (* Revealed context carries a faint rail in the status column: it
+           is the only thing marking a run that is fully open, whose marker
+           AND whose @@ rule are both gone. Without it [X] would fold a
+           region whose extent the reader cannot see. *)
+        ( seg Theme.context (if revealed then "\u{2506} " else "  ")
+        , spans_view ~base:[] ~spans:new_spans ~width:content_width ~pan s )
     in
     View.hcat [ gutter; bar; content ]
 ;;
@@ -155,7 +188,7 @@ let render_line ~width ~old_spans ~new_spans ~cursor_here ~pan (line : Document.
    over the whole viewport would span the file-line gap between hunks and
    degenerate to a near-full-file query when two distant hunks are visible
    at once. *)
-let span_lookups ~old_hl ~new_hl (visible : Document.line array) =
+let span_lookups ~old_hl ~new_hl (visible : Document.row array) =
   let n = Array.length visible in
   let old_spans = Array.create ~len:n []
   and new_spans = Array.create ~len:n [] in
@@ -168,9 +201,9 @@ let span_lookups ~old_hl ~new_hl (visible : Document.line array) =
     in
     let acc = ref None in
     for i = lo to hi - 1 do
-      match visible.(i) with
+      match visible.(i).line with
       | Document.Diff_line (o, n, _) -> acc := extend !acc (side (o, n))
-      | File_header _ | Hunk_header _ -> ()
+      | File_header _ | Rule _ -> ()
     done;
     !acc
   in
@@ -181,12 +214,12 @@ let span_lookups ~old_hl ~new_hl (visible : Document.line array) =
       | Some (from_line, to_line) ->
         let window = Highlight.window hl ~from_line ~to_line in
         for i = lo to hi - 1 do
-          match visible.(i) with
+          match visible.(i).line with
           | Document.Diff_line (o, n, _) ->
             (match side (o, n) with
              | Some line -> spans.(i) <- Highlight.Window.line window line
              | None -> ())
-          | File_header _ | Hunk_header _ -> ()
+          | File_header _ | Rule _ -> ()
         done
     in
     fill old_spans old_hl fst;
@@ -194,13 +227,13 @@ let span_lookups ~old_hl ~new_hl (visible : Document.line array) =
   in
   let run_start = ref None in
   for i = 0 to n - 1 do
-    match visible.(i), !run_start with
+    match visible.(i).line, !run_start with
     | Document.Diff_line _, None -> run_start := Some i
     | Diff_line _, Some _ -> ()
-    | (File_header _ | Hunk_header _), Some lo ->
+    | (File_header _ | Rule _), Some lo ->
       flush ~lo ~hi:i;
       run_start := None
-    | (File_header _ | Hunk_header _), None -> ()
+    | (File_header _ | Rule _), None -> ()
   done;
   Option.iter !run_start ~f:(fun lo -> flush ~lo ~hi:n);
   old_spans, new_spans
@@ -209,27 +242,28 @@ let span_lookups ~old_hl ~new_hl (visible : Document.line array) =
 let render ~(content : content) ~(model : State.Model.t) ~(dimensions : Dimensions.t) =
   match content with
   | `Message m -> seg Theme.context (" " ^ m)
-  | `Document (doc, old_hl, new_hl) ->
+  | `Document (source, old_hl, new_hl) ->
+    let doc = State.shown source model in
     let height = dimensions.height in
     let scroll = State.clamp_scroll doc ~height model.scroll in
     let cursor = State.effective_cursor doc model in
-    let visible =
-      Array.sub doc ~pos:scroll ~len:(Int.min height (Array.length doc - scroll))
-    in
+    let total = Array.length doc in
+    let visible = Array.sub doc ~pos:scroll ~len:(Int.min height (total - scroll)) in
     let old_spans, new_spans = span_lookups ~old_hl ~new_hl visible in
-    let bar = Scrollbar.view ~total:(Array.length doc) ~visible:height ~offset:scroll in
+    let bar = Scrollbar.view ~total ~visible:height ~offset:scroll in
     let width = dimensions.width - if Option.is_some bar then 1 else 0 in
     let body =
       View.vcat
         (Array.to_list
-           (Array.mapi visible ~f:(fun i line ->
+           (Array.mapi visible ~f:(fun i row ->
               render_line
                 ~width
                 ~old_spans:old_spans.(i)
                 ~new_spans:new_spans.(i)
                 ~cursor_here:(i + scroll = cursor)
                 ~pan:model.pan
-                line)))
+                ~revealed:row.Document.revealed
+                row.Document.line)))
     in
     Scrollbar.attach ~width:dimensions.width ~bar body
 ;;

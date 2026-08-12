@@ -1,10 +1,13 @@
+open! Core
+
 (** The viewport state machine: cursor and scroll over a [Document], pure.
     The component wires this through [state_machine_with_input] so every
     event transitions the CURRENT model — a trackpad flick delivers many
     wheel ticks per frame, and folding them through a per-frame snapshot
     would collapse the burst into one step.
 
-    Behavioral contract (helix-feel): the cursor rests only on diff rows;
+    Behavioral contract (helix-feel): the cursor rests only on cursor rows
+    (diff rows and the markers standing in for elided context);
     motions keep it 5 rows from the viewport edges (margin shrinks on tiny
     panes so it always stays visible); a wheel tick moves the VIEW by 3
     rows and never moves the cursor — the selection may sit off-screen,
@@ -12,9 +15,19 @@
 
 module Model : sig
   type t =
-    { cursor : int (** document row index *)
+    { cursor : int
+      (** a POSITION in the full file, not a visible row: stable across
+          every mask change by construction, so no re-anchoring exists.
+          The row it displays on is [effective_cursor] — itself when the
+          mask shows it, the marker hiding it otherwise. *)
     ; scroll : int (** first visible document row *)
     ; pan : int (** horizontal column offset of the content area *)
+    ; levels : (int * int) Int.Map.t
+      (** the mask, PER elided run (keyed by first pre-image line): the
+          ABSOLUTE context depth each (top, bottom) end is open to —
+          uniform (5, 5) is git -U5. Empty preserves the reader's own
+          [diff.context] exactly, and expanding one end of one run moves
+          nothing anywhere else. *)
     }
 
   val initial : t
@@ -25,17 +38,31 @@ module Action : sig
     | Move of int (** cursor by n rows (snapped to a diff row) *)
     | Half_page of int (** direction: +1 down, -1 up *)
     | Wheel of int (** direction: +1 down, -1 up *)
-    | Click of int
-        (** ABSOLUTE document row: the handler maps the clicked viewport
-            row through the scroll it painted with, so clicks resolve
-            against what the user saw even if scroll actions share the
-            frame *)
+    | Click of
+        { row : int
+          (** ABSOLUTE document row: the handler maps the clicked viewport
+              row through the scroll it painted with, so clicks resolve
+              against what the user saw even if scroll actions share the
+              frame *)
+        ; column : int
+          (** pane-local; on a counted rule its chevrons choose the
+              direction, anywhere else on the rule opens both ends *)
+        }
     | Pan of int
         (** direction: +1 right, -1 left; 4-column steps, clamped just past
             the longest visible line; the gutter never pans *)
+    | Context of [ `Up | `Down | `Open | `Reset ]
+        (** [`Up] reveals more directly above the reading position — the
+            bottom end of the boundary at or above the cursor — and
+            [`Down] mirrors it; [`Open] (a click) raises both ends of the
+            clicked rule; [`Reset] folds the run at the cursor. Steps walk
+            a ladder of rungs, skipping any at or below what git already
+            shipped, and resolve at APPLY time, so a burst walks the
+            ladder. *)
     | Reveal
         (** after a doc replacement under the same selection: re-snap the
-            kept cursor into the new document and reveal it *)
+            kept cursor and reveal it. The expansion needs no repair — it
+            is keyed on file lines. *)
     | Reset
     | Operate of [ `Stage_hunk | `Unstage_hunk | `Copy_line ]
         (** effectful keys, resolved at apply time by the component's
@@ -43,16 +70,28 @@ module Action : sig
   [@@deriving sexp_of]
 end
 
-(** Pure transition. [height] is the pane's inner height at dispatch time;
-    scroll is re-anchored against the current document and height first
-    (resizes don't fire actions), and motions start from
-    [effective_cursor]. *)
-val apply_action : Document.t -> Model.t -> Action.t -> height:int -> Model.t
+(** Pure transition over the SOURCE, not a built document: the machine
+    materializes what [model.levels] displays itself, so a burst of
+    reveals in one frame sees each other's rows. Scroll is re-anchored
+    against the current document and height first (resizes don't fire
+    actions), and motions start from [effective_cursor]. *)
+val apply_action : Document.Source.t -> Model.t -> Action.t -> height:int -> Model.t
 
-(** The cursor row to display, to start motions from, and to stage hunks
-    at: the model cursor normalized onto a diff row (fresh loads leave it
-    on a header). Independent of the viewport — after wheel scrolling it
-    may be off-screen, and render simply shows no cursor row. *)
+(** Render and the [Operate] wrapper both go through this, so no caller
+    reads a document that disagrees with the model transitioning it. *)
+val shown : Document.Source.t -> Model.t -> Document.t
+
+(** The chevrons a counted rule draws after its number columns, and the
+    click zones over them — one definition for both, so an arrow can never
+    be clickable where it is not drawn. *)
+val arrows : string
+
+val arrows_cells : int
+
+(** The VISIBLE row the cursor's file position is on — itself when the
+    mask shows it, the counted rule hiding it otherwise. Independent of
+    the viewport: wheel scrolling may leave it off-screen, and motions
+    and staging still act on it. *)
 val effective_cursor : Document.t -> Model.t -> int
 
 (** Scroll clamped for the current document and pane height; render clamps

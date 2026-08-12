@@ -23,10 +23,11 @@ module Model : sig
     ; scroll : int (** first visible document row *)
     ; pan : int (** horizontal column offset of the content area *)
     ; levels : (int * int) Int.Map.t
-      (** the mask, PER elided run (keyed by first pre-image line): how
-          far its (top, bottom) ends are open. Empty preserves the
-          reader's own [diff.context] exactly, and expanding one end of
-          one run moves nothing anywhere else. *)
+      (** the mask, PER elided run (keyed by first pre-image line): the
+          ABSOLUTE context depth each (top, bottom) end is open to —
+          uniform (5, 5) is git -U5. Empty preserves the reader's own
+          [diff.context] exactly, and expanding one end of one run moves
+          nothing anywhere else. *)
     }
 
   val initial : t

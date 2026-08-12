@@ -346,7 +346,32 @@ let () =
        (Document.hunk_under src rest ~row:rule_row
         |> Option.map ~f:(fun h -> h.Gitter.Git.Diff.Hunk.old_start))
        (Some 7));
-  check "out of range stages nothing" (Option.is_none (Document.hunk_under src rest ~row:999))
+  check "out of range stages nothing" (Option.is_none (Document.hunk_under src rest ~row:999));
+  (* Multi-file sources never stage — line numbers repeat across files —
+     and an empty document has nothing under any row. *)
+  let multi =
+    Document.Source.create
+      (Gitter.Git.Diff.parse
+         (String.concat_lines
+            ([ "diff --git a/a.txt b/a.txt"; "@@ -1,2 +1,2 @@"; " x"; "-y"; "+Y" ]
+             @ [ "diff --git a/b.txt b/b.txt"; "@@ -1,2 +1,2 @@"; " x"; "-y"; "+Y" ])))
+      ~old_text:""
+      ~new_text:""
+  in
+  let mdoc = Document.of_source multi ~levels:Int.Map.empty in
+  check
+    "multi-file sources stage nothing anywhere"
+    (Array.for_alli mdoc ~f:(fun r _ -> Option.is_none (Document.hunk_under multi mdoc ~row:r)));
+  check
+    "and their file headers are unowned in particular"
+    (match mdoc.(0).Document.line with
+     | Document.File_header _ -> Option.is_none (Document.hunk_under multi mdoc ~row:0)
+     | _ -> false);
+  let empty = Document.Source.empty in
+  check
+    "an empty document stages nothing"
+    (Option.is_none
+       (Document.hunk_under empty (Document.of_source empty ~levels:Int.Map.empty) ~row:0))
 ;;
 
 (* The ladder, and the headline invariant: the cursor is a file position,
@@ -400,7 +425,7 @@ let () =
   check
     "a position the mask hides displays on its marker"
     (match doc.(State.effective_cursor doc folded).Document.line with
-     | Document.Rule _ | Document.Diff_line _ -> true
+     | Document.Rule { hidden; _ } -> hidden > 0
      | _ -> false)
 ;;
 
@@ -530,9 +555,12 @@ let () =
   let o1, h1 = Option.value_exn (marker_at (State.shown src up) middle_key) in
   check "K shrinks the boundary above the cursor" (h1 < h0);
   check "from its bottom: the first hidden line does not move" (o1 = o0);
-  check "and touches exactly one end of one run"
-    ([%equal: (int * int) option] (Map.find up.Model.levels middle_key)
-       (Some (0, snd (Option.value_exn (Map.find up.Model.levels middle_key)))));
+  check "and touches exactly one run" (Map.length up.Model.levels = 1);
+  check
+    "and only its bottom end"
+    (match Map.find up.Model.levels middle_key with
+     | Some (t, b) -> t = 0 && b > 0
+     | None -> false);
   let down = apply src m0 (A.Context `Down) in
   let third_key = List.nth_exn (Document.runs src) 2 in
   check "J acts on the boundary BELOW the cursor" (Map.mem down.Model.levels third_key);

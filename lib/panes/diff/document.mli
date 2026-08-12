@@ -109,7 +109,11 @@ val run_span : Source.t -> int -> (int * int) option
 
 (** The visible row displaying position [pos]: the row itself when shown,
     the rule hiding it otherwise. How a cursor held in file positions is
-    located in whatever the mask currently shows. *)
+    located in whatever the mask currently shows.
+
+    Returns 0 on an EMPTY document — not a valid row. Callers that index
+    must guard, as [State.snap] does; the pure-arithmetic uses (viewport
+    pinning) deliberately don't need to. *)
 val index_of_pos : t -> int -> int
 
 (** The hunk the row at [row] belongs to, resolved from its LINE NUMBERS

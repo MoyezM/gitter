@@ -6,9 +6,11 @@ module Model = struct
     ; scroll : int
     ; pan : int (* horizontal column offset of the content area *)
     ; levels : (int * int) Int.Map.t
-      (* per elided run (keyed by first pre-image line), how far its (top,
-         bottom) ends are open beyond what git shipped; absent = git's
-         own *)
+      (* per elided run (keyed by first pre-image line), the ABSOLUTE
+         context depth each (top, bottom) end is open to — the same unit
+         as [dist], so (5, 5) everywhere is git -U5; absent = git's own.
+         [step] keeps every rung above [base], which is why a stored end
+         always exceeds what git shipped. *)
     }
 
   let initial = { cursor = 0; scroll = 0; pan = 0; levels = Int.Map.empty }

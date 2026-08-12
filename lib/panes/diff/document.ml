@@ -77,6 +77,8 @@ module Source = struct
     ; up = Array.create ~len:(Array.length full) 0
     ; down = Array.create ~len:(Array.length full) 0
     ; runkey = Array.create ~len:(Array.length full) (-1)
+    ; memo = None (* [empty]'s memo is MUTATED by [of_source]; inheriting it
+                     via [with] would serve its cached rows for this source *)
     }
   ;;
 

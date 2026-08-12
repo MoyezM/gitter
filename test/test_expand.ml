@@ -590,4 +590,43 @@ let () =
         check "action on an empty document is total" (m.cursor = 0 && m.scroll = 0)))
 ;;
 
+(* Regression: [Source.empty] is one shared value and [of_source] memoizes
+   INTO it, so [inert]'s record copy of it must reset the memo — inheriting
+   it served the empty's cached [||] as any later fallback source's rows
+   (the blank pane for every untracked file). Poison the shared empty
+   explicitly, then pin both constructors that copy it. *)
+let () =
+  check
+    "the empty source shows nothing"
+    (Array.length (Document.of_source Document.Source.empty ~levels:Int.Map.empty) = 0);
+  let fixture =
+    Document.Source.of_rows
+      [ { Document.line = Diff_line (Some 1, Some 1, Context "x"); revealed = false; pos = 0 } ]
+  in
+  check
+    "an of_rows source built after it keeps its rows"
+    (Array.length (Document.of_source fixture ~levels:Int.Map.empty) = 1);
+  let untracked =
+    String.concat_lines
+      [ "diff --git a/n.txt b/n.txt"
+      ; "new file mode 100644"
+      ; "index 0000000..0f7bc76"
+      ; "--- /dev/null"
+      ; "+++ b/n.txt"
+      ; "@@ -0,0 +1,2 @@"
+      ; "+hello"
+      ; "+world"
+      ]
+  in
+  let src =
+    Document.Source.create
+      (Gitter.Git.Diff.parse untracked)
+      ~old_text:""
+      ~new_text:"hello\nworld\n"
+  in
+  check
+    "an untracked file's source built after it keeps its rows"
+    (Array.length (Document.of_source src ~levels:Int.Map.empty) > 0)
+;;
+
 let () = print_endline "All expand tests passed."

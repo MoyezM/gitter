@@ -1,6 +1,6 @@
 (tests
  (names test_solver test_git test_highlight test_cursor test_tree test_scrollbar
-   test_clipboard test_stack test_terminal test_session)
+   test_clipboard test_stack test_terminal test_session test_expand)
  (libraries async bonsai_term core gitter grammar_registry tree-sitter)
  (link_flags (:include link_flags.sexp))
  (preprocess

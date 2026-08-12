@@ -2,9 +2,10 @@ open! Core
 open! Bonsai_term
 
 type payload =
-  { document : Document.t
-  ; files : Git.Diff.File.t list (* kept for hunk staging: raw hunk bytes *)
-  ; binary_only : bool
+  { source : Document.Source.t
+  ; files : Git.Diff.File.t list
+    (* the parsed diff — how Render.content tells an empty diff from a
+       binary or mode-only one; staging reads Source.hunks instead *)
   ; old_hl : Highlight.t
   ; new_hl : Highlight.t
   }
@@ -88,12 +89,22 @@ let load t ~key ~set =
           the entry check above skips it entirely for already-superseded
           fetches. Domain exhaustion falls back to building on the
           scheduler — slow but correct; the pane must never wedge. *)
-       let%bind.Effect document =
-         Effect.of_deferred_thunk (fun () ->
-           try Cpu.in_domain (fun () -> Document.of_files files) with
-           | _ -> Async.return (Document.of_files files))
+       (* Pre-warming the empty-levels mask keeps the FIRST materialization
+          in the domain too: a selection change resets levels before the
+          load, so the pane's first ask is a memo hit, not an O(rows) walk
+          on the scheduler right as the fetch lands. *)
+       let build () =
+         let source =
+           Document.Source.create files ~old_text:old_content ~new_text:new_content
+         in
+         ignore (Document.of_source source ~levels:Int.Map.empty : Document.t);
+         source
        in
-       let binary_only = (not (List.is_empty files)) && Array.is_empty document in
+       let%bind.Effect source =
+         Effect.of_deferred_thunk (fun () ->
+           try Cpu.in_domain build with
+           | _ -> Async.return (build ()))
+       in
        (* Phase one: diff text renders immediately, plain. *)
        let%bind.Effect () =
          when_current
@@ -101,12 +112,7 @@ let load t ~key ~set =
               (Some
                  ( key
                  , Ok
-                     { document
-                     ; files
-                     ; binary_only
-                     ; old_hl = Highlight.empty
-                     ; new_hl = Highlight.empty
-                     } )))
+                     { source; files; old_hl = Highlight.empty; new_hl = Highlight.empty } )))
        in
        (* Phase two: highlight sessions parse in their own domains and swap
           in when ready — frames never wait on a parse. *)
@@ -116,7 +122,7 @@ let load t ~key ~set =
              (Highlight.create ~path old_content)
              (Highlight.create ~path new_content))
        in
-       when_current (set (Some (key, Ok { document; files; binary_only; old_hl; new_hl }))))
+       when_current (set (Some (key, Ok { source; files; old_hl; new_hl }))))
 ;;
 
 let clear t ~set =

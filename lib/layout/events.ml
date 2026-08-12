@@ -90,7 +90,13 @@ let handle_mouse
         | None -> Effect.Ignore
         | Some leaf ->
           (match kind with
-           | Left ->
+           (* Scrolling focuses too, not just clicking. A wheel event
+              already routes to the leaf under the POINTER rather than the
+              focused one, so without this, wheeling to bring something
+              into view and then pressing a key sends that key to whatever
+              pane still holds focus — silently, since the key is usually
+              unbound there. *)
+           | Left | Scroll _ ->
              Effect.Many [ inject (Focus leaf.id); forward_to_leaf ~handlers leaf event ]
            | _ -> forward_to_leaf ~handlers leaf event)))
 ;;

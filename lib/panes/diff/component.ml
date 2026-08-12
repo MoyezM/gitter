@@ -22,12 +22,12 @@ let component
   in
   let doc_input =
     let%arr content and dimensions in
-    let doc =
+    let source =
       match content with
-      | `Message _ -> [||]
-      | `Document (doc, _, _) -> doc
+      | `Message _ -> Document.Source.empty
+      | `Document (source, _, _) -> source
     in
-    doc, dimensions.height
+    source, dimensions.height
   in
   let machine_input =
     let%arr doc_input and selection and result and stage_hunk and unstage_hunk and copy_path in
@@ -39,7 +39,7 @@ let component
       ~apply_action:(fun ctx input model action ->
         match input with
         | Bonsai.Computation_status.Inactive -> model
-        | Active ((doc, height), selection, result, (stage_hunk, unstage_hunk, copy_path))
+        | Active ((source, height), selection, result, (stage_hunk, unstage_hunk, copy_path))
           ->
           (match action with
            | State.Action.Operate op ->
@@ -48,7 +48,7 @@ let component
              let schedule e = Bonsai.Apply_action_context.schedule_event ctx e in
              (match op, selection with
               | `Copy_line, Some (path, _) ->
-                schedule (copy_path (State.yank_target doc model ~path))
+                schedule (copy_path (State.yank_target (State.shown source model) model ~path))
               | (`Stage_hunk | `Unstage_hunk), Some ((path, side) as key) ->
                 let wanted, run =
                   match op with
@@ -57,23 +57,25 @@ let component
                   | `Copy_line -> assert false
                 in
                 (match result with
-                 | Some (rkey, Ok (payload : Fetch.payload))
+                 | Some (rkey, Ok (_ : Fetch.payload))
                    when [%equal: Fetch.key] key rkey
                         && [%equal: Fetch.side] side (wanted :> Fetch.side) ->
-                   let cursor = State.effective_cursor doc model in
-                   (match Document.hunk_at doc ~row:cursor with
-                    | None -> ()
-                    | Some (fi, hi) ->
-                      (match
-                         Option.bind (List.nth payload.files fi) ~f:(fun f ->
-                           List.nth f.hunks hi)
-                       with
-                       | Some hunk -> schedule (run ~path ~raw:hunk.Git.Diff.Hunk.raw)
-                       | None -> ()))
+                   (* The hunk is resolved from the cursor's LINE NUMBER
+                      against the parse — display-independent, so no mask
+                      change can retarget it. *)
+                   let doc = State.shown source model in
+                   (match
+                      Document.hunk_under
+                        source
+                        doc
+                        ~row:(State.effective_cursor doc model)
+                    with
+                    | Some hunk -> schedule (run ~path ~raw:hunk.Git.Diff.Hunk.raw)
+                    | None -> ())
                  | _ -> ())
               | _, None -> ());
              model
-           | action -> State.apply_action doc model action ~height))
+           | action -> State.apply_action source model action ~height))
       machine_input
       graph
   in
@@ -109,18 +111,19 @@ let component
     ~callback
     watch
     graph;
-  (* When the document's SHAPE changes under the kept cursor (a
-     revision-bump refetch after staging shrinks/renumbers it), re-anchor
-     with [Reveal] so hunk staging can't silently retarget. Keyed on the
-     row count, not the payload: the two-phase highlight swap-in delivers
-     an identical document and must not yank the viewport. *)
+  (* When the document is REPLACED under the kept cursor (a revision-bump
+     refetch after staging), re-anchor with [Reveal] so hunk staging can't
+     silently retarget. Keyed on the SOURCE's identity: the two-phase
+     highlight swap-in re-delivers the very same source and must not yank
+     the viewport, while a refetch always builds a fresh one — and nothing
+     here materializes a document just to fingerprint it. *)
   Bonsai.Edge.on_change
-    ~equal:Int.equal
+    ~equal:phys_equal
     ~callback:
       (let%arr inject in
-       fun (_ : int) -> inject State.Action.Reveal)
+       fun (_ : Document.Source.t) -> inject State.Action.Reveal)
     (let%arr doc_input in
-     Array.length (fst doc_input))
+     fst doc_input)
     graph;
   let view =
     let%arr content and model and dimensions in
@@ -128,7 +131,8 @@ let component
   in
   let handler =
     let%arr doc_input and inject and model in
-    let doc, height = doc_input in
+    let source, height = doc_input in
+    let doc = State.shown source model in
     fun (event : Event.t) ->
       match event with
       (* Effectful keys go through the machine — targets resolve at APPLY
@@ -148,6 +152,12 @@ let component
         | Key_press { key = Arrow `Down; mods = [] } -> inject (State.Action.Move 1)
         | Key_press { key = ASCII 'k'; mods = [] }
         | Key_press { key = Arrow `Up; mods = [] } -> inject (Move (-1))
+        (* Context: K pulls more in above the reading position, J below,
+           X folds the boundary at the cursor. notty reports shifted
+           letters as plain uppercase with no modifier. *)
+        | Key_press { key = ASCII 'K'; mods = [] } -> inject (Context `Up)
+        | Key_press { key = ASCII 'J'; mods = [] } -> inject (Context `Down)
+        | Key_press { key = ASCII 'X'; mods = [] } -> inject (Context `Reset)
         (* Half-page jumps. *)
         | Key_press { key = ASCII ('n' | '['); mods = [] } -> inject (Half_page 1)
         | Key_press { key = ASCII ('p' | ']'); mods = [] } -> inject (Half_page (-1))
@@ -161,7 +171,11 @@ let component
         | Mouse { kind = Left; position; _ } ->
           (* Map through the scroll this handler PAINTED with (render
              clamps identically), so the click hits what the user saw. *)
-          inject (Click (State.clamp_scroll doc ~height model.scroll + position.y))
+          inject
+            (Click
+               { row = State.clamp_scroll doc ~height model.scroll + position.y
+               ; column = position.x
+               })
         | _ -> Effect.Ignore)
   in
   ~view, ~handler

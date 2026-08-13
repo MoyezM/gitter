@@ -34,12 +34,14 @@ let content ~selection ~(result : Fetch.result) : content =
      | Some _ | None -> `Message "loading diff...")
 ;;
 
-(* Render a line as syntax-colored spans over the row's background. The row
-   is truncated then padded to exactly [width], so the tint runs the full
+(* Render a line as syntax-colored spans over the row's background, with
+   the search's match spans underlined through them — underline is the
+   match channel (R3): syntax owns the foreground, the diff status owns
+   the background, and a match must read through both. The row is
+   truncated then padded to exactly [width], so the tint runs the full
    pane and never overflows it. *)
-let spans_view ~base ~spans ~width ~pan text =
+let spans_view ~base ~spans ~underline ~width ~pan text =
   let default_fg = [ Attr.fg Theme.text ] in
-  let piece ~fg s = seg (fg @ base) s in
   (* Pan: slice the leading columns off text and spans alike (byte-based,
      consistent with the rest of the column math). *)
   let text = if pan > 0 then String.drop_prefix text pan else text in
@@ -52,6 +54,8 @@ let spans_view ~base ~spans ~width ~pan text =
         and end_col = end_col - pan in
         if end_col <= 0 then None else Some { Highlight.Span.start_col; end_col; capture })
   in
+  (* [underline] stays in ORIGINAL text coordinates: [Query.runs]'s
+     [offset] does the pan arithmetic below. *)
   (* Truncate to at most [width] CODEPOINTS. Each codepoint occupies at
      least one cell, so more can never fit — but cutting by BYTES would
      discard multibyte content that fits the cell budget, and could split a
@@ -73,28 +77,56 @@ let spans_view ~base ~spans ~width ~pan text =
       go 0 0)
   in
   let len = String.length text in
+  (* First the syntax walk, as (fg, start, stop) ranges... *)
   let rec go col spans acc =
     if col >= len
     then List.rev acc
     else (
       match spans with
-      | [] -> List.rev (piece ~fg:default_fg (String.subo text ~pos:col) :: acc)
+      | [] -> List.rev ((default_fg, col, len) :: acc)
       | { Highlight.Span.start_col; end_col; capture } :: rest ->
         if end_col <= col
         then go col rest acc
         else if start_col > col
         then (
           let stop = Int.min start_col len in
-          go stop spans (piece ~fg:default_fg (String.sub text ~pos:col ~len:(stop - col)) :: acc))
+          go stop spans ((default_fg, col, stop) :: acc))
         else (
           let stop = Int.min end_col len in
           let fg = Option.value (Theme.syntax capture) ~default:default_fg in
-          go stop rest (piece ~fg (String.sub text ~pos:col ~len:(stop - col)) :: acc)))
+          go stop rest ((fg, col, stop) :: acc)))
   in
+  (* ...then each range splits per the underline spans — the same
+     [Query.runs] idiom the tree renders use, so the two span dimensions
+     compose without either owning the other. The range starts at panned
+     column [start], i.e. original byte [start + pan]. *)
+  let emit (fg, start, stop) =
+    match underline with
+    | [] ->
+      (* No live search: one substring per range, no runs pass — this is
+         the innermost render loop. *)
+      [ seg (fg @ base) (String.sub text ~pos:start ~len:(stop - start)) ]
+    | _ :: _ ->
+      Search.Query.runs
+        ~spans:underline
+        ~offset:(start + pan)
+        (String.sub text ~pos:start ~len:(stop - start))
+      |> List.map ~f:(fun (piece, matched) ->
+        seg ((if matched then Attr.underline :: fg else fg) @ base) piece)
+  in
+  let content = View.hcat (List.concat_map (go 0 spans []) ~f:emit) in
+  (* Pad by CELLS, not bytes. [len] is a byte count; a multibyte glyph
+     (em-dash, box-drawing) is fewer cells than bytes, so padding by
+     [width - len] under-fills and the row's background tint stops short
+     of the pane's right edge. [View.width] measures the real display
+     width. *)
+  let used = View.width content in
   let pad =
-    if len < width then [ piece ~fg:default_fg (String.make (width - len) ' ') ] else []
+    if used < width
+    then [ seg (default_fg @ base) (String.make (width - used) ' ') ]
+    else []
   in
-  View.hcat (go 0 spans [] @ pad)
+  View.hcat (content :: pad)
 ;;
 
 let number = function
@@ -151,7 +183,17 @@ let elided_row ~width ~cursor_here ~hidden ~old_no ~new_no ~label =
     ]
 ;;
 
-let render_line ~width ~old_spans ~new_spans ~cursor_here ~pan ~revealed (line : Document.line) =
+let render_line
+  ~width
+  ~old_spans
+  ~new_spans
+  ~cursor_here
+  ~current_here
+  ~search
+  ~pan
+  ~revealed
+  (line : Document.line)
+  =
   match line with
   | File_header p -> seg Theme.header p
   (* A plain rule is the labeled divider the pane has always drawn; a
@@ -162,23 +204,49 @@ let render_line ~width ~old_spans ~new_spans ~cursor_here ~pan ~revealed (line :
   | Diff_line (old_no, new_no, line) ->
     let gutter = seg (gutter_attrs ~cursor_here) (number old_no ^ number new_no) in
     let content_width = Int.max 1 (width - gutter_width) in
+    (* Every visible match underlines; the CURRENT one additionally takes
+       the selection background in place of its diff tint (D2). *)
+    let underline text =
+      match search with
+      | None -> []
+      | Some query -> Option.value (Search.Query.spans query text) ~default:[]
+    in
+    let tint tint = if current_here then [ Theme.selection_bg ] else tint in
     (* Removed lines highlight from the HEAD blob; added/context from the
        worktree blob — the per-row span lists arrive pre-selected by side. *)
     let bar, content =
       match line with
       | Git.Diff.Line.Added s ->
         ( seg Theme.added_bar "\u{258E} "
-        , spans_view ~base:[ Attr.bg Theme.added_bg ] ~spans:new_spans ~width:content_width ~pan s )
+        , spans_view
+            ~base:(tint [ Attr.bg Theme.added_bg ])
+            ~spans:new_spans
+            ~underline:(underline s)
+            ~width:content_width
+            ~pan
+            s )
       | Removed s ->
         ( seg Theme.removed_bar "\u{258E} "
-        , spans_view ~base:[ Attr.bg Theme.removed_bg ] ~spans:old_spans ~width:content_width ~pan s )
+        , spans_view
+            ~base:(tint [ Attr.bg Theme.removed_bg ])
+            ~spans:old_spans
+            ~underline:(underline s)
+            ~width:content_width
+            ~pan
+            s )
       | Context s ->
         (* Revealed context carries a faint rail in the status column: it
            is the only thing marking a run that is fully open, whose marker
            AND whose @@ rule are both gone. Without it [X] would fold a
            region whose extent the reader cannot see. *)
         ( seg Theme.context (if revealed then "\u{2506} " else "  ")
-        , spans_view ~base:[] ~spans:new_spans ~width:content_width ~pan s )
+        , spans_view
+            ~base:(tint [])
+            ~spans:new_spans
+            ~underline:(underline s)
+            ~width:content_width
+            ~pan
+            s )
     in
     View.hcat [ gutter; bar; content ]
 ;;
@@ -252,6 +320,7 @@ let render ~(content : content) ~(model : State.Model.t) ~(dimensions : Dimensio
     let old_spans, new_spans = span_lookups ~old_hl ~new_hl visible in
     let bar = Scrollbar.view ~total ~visible:height ~offset:scroll in
     let width = dimensions.width - if Option.is_some bar then 1 else 0 in
+    let search = State.search_query model in
     let body =
       View.vcat
         (Array.to_list
@@ -261,6 +330,11 @@ let render ~(content : content) ~(model : State.Model.t) ~(dimensions : Dimensio
                 ~old_spans:old_spans.(i)
                 ~new_spans:new_spans.(i)
                 ~cursor_here:(i + scroll = cursor)
+                ~current_here:
+                  (match model.current_match with
+                   | Some pos -> row.Document.pos = pos
+                   | None -> false)
+                ~search
                 ~pan:model.pan
                 ~revealed:row.Document.revealed
                 row.Document.line)))

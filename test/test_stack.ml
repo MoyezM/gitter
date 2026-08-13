@@ -169,6 +169,7 @@ let () =
 (* ---- the pane's fold/viewport state over the parsed stack -------------- *)
 
 module PS = Gitter.Panes.Stack.State
+module Nav = Gitter.Tree_listing.Action
 
 let mk ?(current = false) ?(trunk = false) ?(restack = false) name depth =
   { Stack.Branch.name; depth; is_current = current; is_trunk = trunk; needs_restack = restack }
@@ -190,7 +191,7 @@ let branches =
   : Stack.Branch.t list)
 ;;
 
-module Listing = Gitter.Panes.Listing
+module Listing = Gitter.Listing
 
 let keys rows = List.map rows ~f:(fun (r : PS.Row.t) -> r.key)
 let no_overrides = String.Map.empty
@@ -225,8 +226,8 @@ let () =
   (* Unfold the codex group: members appear under the folder row,
      selection stays on the folder by key. *)
   let m = psel "main//codex" in
-  let m = PS.apply_action ~branches m (PS.Action.Unfold { height = 10 }) in
-  let rows = PS.visible ~branches ~overrides:m.overrides in
+  let m = PS.apply_action ~branches m (Gitter.Search.Action.Pane (PS.Action.Nav (Nav.Unfold { height = 10 }))) in
+  let rows = PS.visible ~branches ~overrides:m.fold in
   check
     "unfolded group shows members under it"
     (List.equal
@@ -238,8 +239,8 @@ let () =
   (* Fold b1: hides the whole current chain under it (explicit override
      beats the contains-current default). *)
   let m2 = psel "b1" in
-  let m2 = PS.apply_action ~branches m2 (PS.Action.Fold { height = 10 }) in
-  let rows2 = PS.visible ~branches ~overrides:m2.overrides in
+  let m2 = PS.apply_action ~branches m2 (Gitter.Search.Action.Pane (PS.Action.Nav (Nav.Fold { height = 10 }))) in
+  let rows2 = PS.visible ~branches ~overrides:m2.fold in
   check
     "folding a chain branch hides its subtree"
     (List.equal
@@ -256,12 +257,12 @@ let () =
   (* Fold on a leaf jumps to the parent; wheel scrolls without moving the
      selection; totality on empty. *)
   let m = psel "lone" in
-  let m = PS.apply_action ~branches m (PS.Action.Fold { height = 10 }) in
+  let m = PS.apply_action ~branches m (Gitter.Search.Action.Pane (PS.Action.Nav (Nav.Fold { height = 10 }))) in
   check "fold on a leaf jumps to the parent"
     ([%equal: string option] (PS.selection_key m) (Some "main"));
-  let m = PS.apply_action ~branches PS.Model.initial (PS.Action.Wheel { dir = 1; height = 3 }) in
+  let m = PS.apply_action ~branches PS.Model.initial (Gitter.Search.Action.Pane (PS.Action.Nav (Nav.Wheel { dir = 1; height = 3 }))) in
   check "wheel scrolls the viewport only" (PS.scroll m = 3 && Option.is_none (PS.selection_key m));
-  let e = PS.apply_action ~branches:[] PS.Model.initial (PS.Action.Move { dir = `Down; height = 5 }) in
+  let e = PS.apply_action ~branches:[] PS.Model.initial (Gitter.Search.Action.Pane (PS.Action.Nav (Nav.Move { dir = `Down; height = 5 }))) in
   check "empty stack is total" (Option.is_none (PS.selection_key e) && PS.scroll e = 0)
 ;;
 
@@ -269,14 +270,14 @@ let () =
    to a successor when the branch disappears. *)
 let () =
   let m = psel "old" in
-  let m = PS.apply_action ~branches m PS.Action.Rows_changed in
+  let m = PS.apply_action ~branches m (Gitter.Search.Action.Pane (PS.Action.Nav Nav.Rows_changed)) in
   check "selection sticks across a resort"
     ([%equal: string option] (PS.selection_key m) (Some "old"));
   let reordered =
     (* old moved: same rows, different sibling order (lone before old) *)
     List.filter branches ~f:(fun b -> not (String.equal b.name "old"))
   in
-  let m2 = PS.apply_action ~branches:reordered m PS.Action.Rows_changed in
+  let m2 = PS.apply_action ~branches:reordered m (Gitter.Search.Action.Pane (PS.Action.Nav Nav.Rows_changed)) in
   check "deleted branch flows to its successor"
     ([%equal: string option] (PS.selection_key m2) (Some "main//codex"))
 ;;
@@ -298,6 +299,96 @@ let () =
     Stack.parse ~heads:"main\tM" ~dag:"" ~reflogs:"" ~trunk:"main" ~current:(Some "main")
   in
   check "trunk has no base" (Option.is_none (Stack.parent_of_current on_trunk))
+;;
+
+(* ---- search over the stack: branch names, ancestors, fold bypass ------- *)
+
+module Search = Gitter.Search
+
+let s event ?(height = 10) model =
+  PS.apply_action ~branches model (Gitter.Search.Action.Prompt { event; height })
+;;
+
+let type_string model text =
+  String.fold text ~init:model ~f:(fun m c -> s (Search.Prompt.Type (Char.to_string c)) m)
+;;
+
+let sel_of (m : PS.Model.t) = PS.selection_key m
+
+(* Narrowing: only branch rows match, on their names; the group and its
+   parent survive as the ancestor chain even though the group starts
+   collapsed (fold bypass). *)
+let () =
+  let m = type_string (s Search.Prompt.Open (psel "main")) "codex" in
+  check
+    "narrowed to matching branches plus ancestors"
+    (List.equal
+       String.equal
+       (keys (PS.visible_rows ~branches m))
+       [ "main"; "main//codex"; "codex/one"; "codex/two" ]);
+  check "counts count branch matches over all rows"
+    ([%equal: int * int] (PS.match_counts ~branches m.search) (2, 9));
+  check "first matching BRANCH is selected (not its group)"
+    ([%equal: string option] (sel_of m) (Some "codex/one"));
+  check "fold overrides untouched while filtering" (Map.is_empty m.fold)
+;;
+
+(* Esc restores selection and fold state exactly. *)
+let () =
+  let m = type_string (s Search.Prompt.Open (psel "b2")) "codex" in
+  let m = PS.apply_action ~branches m (Gitter.Search.Action.Pane (PS.Action.Nav (Nav.Move { dir = `Down; height = 10 }))) in
+  let m = s Search.Prompt.Cancel m in
+  check "esc restores the stack selection" ([%equal: string option] (sel_of m) (Some "b2"));
+  check "esc restores fold overrides" (Map.is_empty m.fold);
+  check "esc leaves no register" (Option.is_none m.search.register)
+;;
+
+(* Commit keeps the accepted selection, unfolding whatever hides it. *)
+let () =
+  let m = type_string (s Search.Prompt.Open (psel "main")) "codex" in
+  let m = s Search.Prompt.Commit m in
+  check "commit keeps the accepted branch"
+    ([%equal: string option] (sel_of m) (Some "codex/one"));
+  check "commit unfolded the hiding group"
+    ([%equal: bool option] (Map.find m.fold "main//codex") (Some false));
+  check
+    "the unfolded group now shows in the plain tree"
+    (List.mem (keys (PS.visible_rows ~branches m)) "codex/one" ~equal:String.equal);
+  check "commit sets the register" ([%equal: string option] m.search.register (Some "codex"))
+;;
+
+(* Committed n/N walk matches in the fully unfolded stack, wrapping. *)
+let () =
+  let committed = s Search.Prompt.Commit (type_string (s Search.Prompt.Open (psel "main")) "codex") in
+  (* Fold the group back; n must reach inside it again. *)
+  let refolded = { committed with Gitter.Search.Tree_search.Model.fold = String.Map.empty; listing = { committed.listing with selection = Some "main" } } in
+  let m = PS.apply_action ~branches refolded (Gitter.Search.Action.Jump { dir = 1; height = 10 }) in
+  check "n reaches a match under a collapsed group"
+    ([%equal: string option] (sel_of m) (Some "codex/one"));
+  let m = PS.apply_action ~branches m (Gitter.Search.Action.Jump { dir = 1; height = 10 }) in
+  check "n walks to the next match" ([%equal: string option] (sel_of m) (Some "codex/two"));
+  let m = PS.apply_action ~branches m (Gitter.Search.Action.Jump { dir = 1; height = 10 }) in
+  check "n wraps" ([%equal: string option] (sel_of m) (Some "codex/one"));
+  let m = PS.apply_action ~branches m (Gitter.Search.Action.Jump { dir = -1; height = 10 }) in
+  check "N wraps backward" ([%equal: string option] (sel_of m) (Some "codex/two"))
+;;
+
+(* Zero matches hold still; totality on the empty stack. *)
+let () =
+  let m = type_string (s Search.Prompt.Open (psel "b2")) "zzz" in
+  check "zero matches renders empty" (List.is_empty (PS.visible_rows ~branches m));
+  check "pre-prompt selection holds" ([%equal: string option] (sel_of m) (Some "b2"));
+  let repaired = PS.apply_action ~branches m (Gitter.Search.Action.Pane (PS.Action.Nav Nav.Rows_changed)) in
+  check "filter churn at zero matches holds still"
+    ([%equal: string option] (sel_of repaired) (Some "b2"));
+  List.iter
+    [ Gitter.Search.Action.Prompt { event = Search.Prompt.Open; height = 10 }
+    ; Prompt { event = Search.Prompt.Commit; height = 10 }
+    ; Jump { dir = 1; height = 10 }
+    ]
+    ~f:(fun action ->
+      let m = PS.apply_action ~branches:[] PS.Model.initial action in
+      check "search actions are total on the empty stack" (Option.is_none (sel_of m)))
 ;;
 
 let () = print_endline "All stack tests passed."

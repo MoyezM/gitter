@@ -26,9 +26,12 @@ let file_in_index path = Runner.git [ "show"; ":0:" ^ path ]
    HEAD, so fall back to a --no-index diff against /dev/null (which exits 1
    when the file is non-empty, hence [accept_nonzero_exit]). *)
 (* Parsing runs in a domain: a 530k-line diff (whole-file-added 17MB) costs
-   ~110ms, which would stall ~7 frames on the scheduler. *)
+   ~110ms, which would stall ~7 frames on the scheduler. On exhaustion the
+   parse runs on the scheduler anyway — pure OCaml holds the runtime lock,
+   so a rare slow frame is the correct degradation. *)
 let parse_off_thread output =
-  let%map.Deferred files = Cpu.in_domain (fun () -> Diff.parse output) in
+  let parse () = Diff.parse output in
+  let%map.Deferred files = Cpu.in_domain ~fallback:parse parse in
   Ok files
 ;;
 
@@ -64,114 +67,17 @@ let diff_staged path =
   parse_off_thread output
 ;;
 
-(* ---- the branch stack (pure git; see Stack) ---------------------------- *)
+(* ---- the branch stack ------------------------------------------------- *)
 
-(* Cheap change signature for the poller: any local ref move shows up. *)
+(* Cheap change signature for the poller: any local ref move shows up.
+   The stack itself is fetched by [Branch_stack.fetch] — this is only the
+   "did anything move?" probe that decides whether to re-run it. *)
 let refs_signature () =
   match%map.Deferred
     Runner.git [ "for-each-ref"; "refs/heads"; "--format=%(refname:short)%09%(objectname)" ]
   with
   | Ok output -> output
   | Error e -> "error:" ^ Error.to_string_hum e
-;;
-
-(* Bounded so a branch far behind trunk can't make the DAG walk huge; the
-   parser degrades gracefully when truncated (distant branches attach to
-   the trunk). *)
-let dag_commit_cap = 5000
-let reflog_tip_cap = 20
-let reflog_branch_cap = 40
-
-let stack () =
-  let open Deferred.Or_error.Let_syntax in
-  (* Recency-sorted so the reflog budget goes to the branches that are
-     actually being worked on, not the alphabetical first 40. *)
-  let%bind heads_raw =
-    Runner.git
-      [ "for-each-ref"
-      ; "refs/heads"
-      ; "--sort=-committerdate"
-      ; "--format=%(refname:short)%09%(objectname)"
-      ]
-  in
-  let heads =
-    String.split_lines heads_raw |> List.filter_map ~f:(fun l -> String.lsplit2 l ~on:'\t')
-  in
-  match heads with
-  | [] -> return []
-  | _ ->
-    let names = List.map heads ~f:fst in
-    let%bind current =
-      match%map.Deferred Runner.git [ "branch"; "--show-current" ] with
-      | Error _ -> Ok None
-      | Ok s ->
-        let s = String.strip s in
-        Ok (Option.some_if (not (String.is_empty s)) s)
-    in
-    (* Trunk: origin's default branch when it exists locally, else
-       main/master, else wherever we are. *)
-    let%bind origin_head =
-      match%map.Deferred Runner.git [ "symbolic-ref"; "--short"; "refs/remotes/origin/HEAD" ] with
-      | Error _ -> Ok None
-      | Ok s ->
-        let s = String.strip s in
-        Ok (Some (Option.value_map (String.lsplit2 s ~on:'/') ~default:s ~f:snd))
-    in
-    let mem n = List.mem names n ~equal:String.equal in
-    let trunk =
-      List.find_map
-        [ origin_head; Some "main"; Some "master"; current; List.hd names ]
-        ~f:(fun c -> Option.bind c ~f:(fun c -> Option.some_if (mem c) c))
-      |> Option.value ~default:(List.hd_exn names)
-    in
-    (* The DAG's floor: each branch's fork point off the trunk, excluded
-       from the walk — leaving exactly the stack-unique commits (plus any
-       trunk advance past the forks). Per-branch merge-bases rather than
-       one --octopus: a single unrelated-history branch fails octopus for
-       everyone, while here it just contributes no floor (its commits are
-       then bounded by the cap alone). *)
-    let%bind bases =
-      match List.Assoc.find heads trunk ~equal:String.equal with
-      | None -> return []
-      | Some trunk_sha ->
-        let others =
-          List.filter_map heads ~f:(fun (n, sha) ->
-            Option.some_if (not (String.equal n trunk)) sha)
-          |> List.dedup_and_sort ~compare:String.compare
-        in
-        (match others with
-         | [] -> return [ trunk_sha ]
-         | _ ->
-           Deferred.List.map others ~how:(`Max_concurrent_jobs 8) ~f:(fun sha ->
-             match%map.Deferred Runner.git [ "merge-base"; trunk_sha; sha ] with
-             | Ok out -> Some (String.strip out)
-             | Error _ -> None (* unrelated history: no floor from this one *))
-           |> Deferred.map ~f:(fun mbs ->
-             Ok (List.filter_opt mbs |> List.dedup_and_sort ~compare:String.compare)))
-    in
-    let%bind dag =
-      Runner.git
-        ([ "rev-list"; "--parents"; sprintf "--max-count=%d" dag_commit_cap; "--branches" ]
-         @ (if List.is_empty bases then [] else "--not" :: bases))
-    in
-    let%map reflogs =
-      List.take names reflog_branch_cap
-      |> Deferred.List.map ~how:(`Max_concurrent_jobs 8) ~f:(fun name ->
-        match%map.Deferred
-          Runner.git
-            [ "log"; "-g"; sprintf "--max-count=%d" reflog_tip_cap; "--format=%H"
-            ; "refs/heads/" ^ name
-            ]
-        with
-        | Error _ -> "" (* no reflog for this ref — fine *)
-        | Ok output ->
-          String.split_lines output
-          |> List.filter ~f:(Fn.non String.is_empty)
-          |> List.map ~f:(fun sha -> name ^ "\t" ^ sha)
-          |> String.concat ~sep:"\n")
-      |> Deferred.map ~f:(fun xs -> Ok (String.concat xs ~sep:"\n"))
-    in
-    Branch_stack.parse ~heads:heads_raw ~dag ~reflogs ~trunk ~current
 ;;
 
 (* Per-file +/- line counts per side (the panes also sum them for the
@@ -196,10 +102,17 @@ let diffstat () =
 let committed ~base () =
   let range = base ^ "...HEAD" in
   let open Deferred.Or_error.Let_syntax in
+  (* [--end-of-options] before the range: [base] is a branch name from a
+     possibly-hostile repo (a crafted ref like [--output=path] would
+     otherwise be parsed as a [git diff] option — an arbitrary file
+     write). git then treats [range] strictly as a revision. *)
   let%bind raw =
-    Runner.git [ "diff"; "--no-color"; "--raw"; "--no-abbrev"; "-M"; range ]
+    Runner.git
+      [ "diff"; "--no-color"; "--raw"; "--no-abbrev"; "-M"; "--end-of-options"; range ]
   in
-  let%map stats = Runner.git [ "diff"; "--no-color"; "--numstat"; "-M"; range ] in
+  let%map stats =
+    Runner.git [ "diff"; "--no-color"; "--numstat"; "-M"; "--end-of-options"; range ]
+  in
   let parsed = Status.parse_raw raw in
   ( List.map parsed ~f:fst
   , Diff.numstat stats |> String.Map.of_alist_reduce ~f:(fun first _ -> first)
@@ -211,14 +124,63 @@ let committed ~base () =
    merge-base's content and HEAD's. *)
 let file_at_base ~base path =
   let open Deferred.Or_error.Let_syntax in
-  let%bind mb = Runner.git [ "merge-base"; base; "HEAD" ] in
+  (* [--end-of-options] so a crafted branch name can't reach [merge-base]
+     as an option (same hostile-repo class as [committed]). *)
+  let%bind mb = Runner.git [ "merge-base"; "--end-of-options"; base; "HEAD" ] in
   Runner.git [ "show"; String.strip mb ^ ":" ^ path ]
 ;;
 
 let diff_committed ~base path =
   let%bind.Deferred.Or_error output =
     Runner.git
-      [ "diff"; "--no-color"; "-M"; base ^ "...HEAD"; "--"; Runner.literal path ]
+      [ "diff"
+      ; "--no-color"
+      ; "-M"
+      ; "--end-of-options"
+      ; base ^ "...HEAD"
+      ; "--"
+      ; Runner.literal path
+      ]
   in
   parse_off_thread output
+;;
+
+(* The three text inputs of a file diff view. THE pairing law, in one
+   place, VSCode-style:
+     Unstaged  = worktree vs INDEX  (old = index blob,      new = worktree file)
+     Staged    = index    vs HEAD   (old = HEAD blob,       new = index blob)
+     Committed = HEAD     vs BASE   (old = merge-base blob, new = HEAD blob)
+   A side the file doesn't have (untracked, deleted, new since HEAD)
+   reads as "". The three reads are independent; start them all before
+   binding (benchmarked at ~20-40ms each — serializing them tripled the
+   latency floor of every fetch). *)
+let diff_with_contents side ~path =
+  let or_empty d =
+    d
+    >>| function
+    | Ok c -> c
+    | Error (_ : Error.t) -> "" (* that side doesn't exist for this file *)
+  in
+  (* Built lazily per arm: constructing the deferred STARTS the read, and
+     only the unstaged side wants the worktree file. *)
+  let worktree () =
+    Monitor.try_with (fun () -> Reader.file_contents path)
+    >>| function
+    | Ok c -> c
+    | Error _ -> "" (* deleted file *)
+  in
+  let diff, old_content, new_content =
+    match side with
+    | `Unstaged -> diff_unstaged path, or_empty (file_in_index path), worktree ()
+    | `Staged ->
+      diff_staged path, or_empty (file_at_head path), or_empty (file_in_index path)
+    | `Committed base ->
+      ( diff_committed ~base path
+      , or_empty (file_at_base ~base path)
+      , or_empty (file_at_head path) )
+  in
+  let%bind.Deferred diff in
+  let%bind.Deferred old_content in
+  let%map.Deferred new_content in
+  Or_error.map diff ~f:(fun files -> files, old_content, new_content)
 ;;

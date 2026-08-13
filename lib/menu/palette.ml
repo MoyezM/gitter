@@ -8,19 +8,12 @@ open! Bonsai_term
 
 let seg attrs s = View.text ~attrs s
 
-(* Fuzzy-ish: the query's characters must appear in the label, in order —
-   a greedy scan that counts how far into the query the label gets. *)
-let matches ~query label =
-  let query = String.lowercase query in
-  let label = String.lowercase label in
-  let qlen = String.length query in
-  qlen
-  = String.fold label ~init:0 ~f:(fun qi c ->
-      if qi < qlen && Char.equal query.[qi] c then qi + 1 else qi)
-;;
-
+(* The one search grammar (Search.Query): the palette's original greedy
+   subsequence scan lives there now, extended with terms, smart-case and
+   negation — so `/` in a pane and `?` here feel like the same feature. *)
 let filter ~query flats =
-  List.filter flats ~f:(fun (f : Commands.Flat.t) -> matches ~query f.label)
+  let query = Search.Query.parse query in
+  List.filter flats ~f:(fun (f : Commands.Flat.t) -> Search.Query.matches query f.label)
 ;;
 
 let text_attrs = [ Attr.fg Theme.text ]

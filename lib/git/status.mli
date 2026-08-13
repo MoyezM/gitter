@@ -17,6 +17,13 @@ module Entry : sig
     ; path : string (** unquoted — real bytes, ready to hand back to git *)
     ; kind : Kind.t
     }
+
+  (** The staged/unstaged classification, VSCode-style: the index side
+      stages a file; the worktree side (or being untracked/conflicted)
+      keeps it in Changes. A file with both kinds of changes is both. *)
+  val is_staged : t -> bool
+
+  val is_unstaged : t -> bool
 end
 
 (** Decode a git C-quoted path (core.quotePath); non-quoted input passes

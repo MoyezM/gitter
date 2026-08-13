@@ -28,6 +28,13 @@ module Model : sig
           uniform (5, 5) is git -U5. Empty preserves the reader's own
           [diff.context] exactly, and expanding one end of one run moves
           nothing anywhere else. *)
+    ; search : Search.Prompt.t
+    ; current_match : int option
+      (** the position the last jump landed on — the "2" of "2/7"; reset
+          by query edits and document swaps *)
+    ; snapshot : ((int * int) Int.Map.t * int * int) option
+      (** (levels, cursor, scroll) at prompt-open — what Esc restores
+          (L4); dropped on commit (D5) *)
     }
 
   val initial : t
@@ -70,12 +77,20 @@ module Action : sig
   [@@deriving sexp_of]
 end
 
-(** Pure transition over the SOURCE, not a built document: the machine
+(** Pure transition over the SOURCE, not a built document (the machine
     materializes what [model.levels] displays itself, so a burst of
-    reveals in one frame sees each other's rows. Scroll is re-anchored
-    against the current document and height first (resizes don't fire
-    actions), and motions start from [effective_cursor]. *)
-val apply_action : Document.Source.t -> Model.t -> Action.t -> height:int -> Model.t
+    reveals in one frame sees each other's rows), and over the WRAPPED
+    action type ([Search.Action] owns mode dispatch; jumps auto-reveal
+    minimally and locally (D4) and land the cursor on the match —
+    everything composes (D7)). Scroll is re-anchored against the
+    current document and height first; motions start from
+    [effective_cursor]. *)
+val apply_action
+  :  Document.Source.t
+  -> Model.t
+  -> Action.t Search.Action.t
+  -> height:int
+  -> Model.t
 
 (** Render and the [Operate] wrapper both go through this, so no caller
     reads a document that disagrees with the model transitioning it. *)
@@ -100,3 +115,13 @@ val clamp_scroll : Document.t -> height:int -> int -> int
 
 (** The y target: "path:LINE" for the cursor row, bare path without one. *)
 val yank_target : Document.t -> Model.t -> path:string -> string
+
+(** The live query (typed while active, else the committed register),
+    parsed — what render underlines (D2). *)
+val search_query : Model.t -> Search.Query.t option
+
+(** The border counter (D6): ["7 · 4 hidden"] before a jump, ["2/7 ·
+    4 hidden"] once one establishes currency, hidden omitted at zero —
+    the total ALWAYS includes hidden matches. [None] when no query is
+    live; ["0"] on an empty or matchless document (D8). *)
+val search_counts : Document.Source.t -> Model.t -> string option

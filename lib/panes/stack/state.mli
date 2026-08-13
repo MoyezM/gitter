@@ -3,9 +3,10 @@ open! Core
 (** Cursor, fold, and viewport state over the branch stack, pure — see
     state.ml for the fold defaults (top-level branches collapse unless
     they carry the current branch's chain) and the shared viewport
-    contract (wheel scrolls without moving the cursor; cursor motion
-    reveals with minimal scroll; clicking a visible row never moves the
-    view). *)
+    contract. The search lifecycle lives in [Search.Tree_search]; this
+    module supplies its pane record (branch names are the match
+    candidates; groups carry ancestors; revealing unfolds via
+    overrides). *)
 
 module Row : sig
   type kind =
@@ -25,43 +26,48 @@ module Row : sig
 end
 
 module Model : sig
-  type t =
-    { listing : Listing.Model.t
-    ; overrides : bool String.Map.t (** row key -> collapsed, user-toggled *)
-    }
+  (** fold = the per-key collapse overrides (row key -> collapsed). *)
+  type t = bool String.Map.t Search.Tree_search.Model.t
 
   val initial : t
 end
 
 module Action : sig
+  (** Navigation is [Tree_listing.Action]; only the stack-specific key
+      lives here. *)
   type t =
-    | Move of
-        { dir : [ `Up | `Down ]
-        ; height : int
-        }
-    | Activate of
-        { row : int (** absolute visible-row index *)
-        ; height : int
-        }
-    | Fold of { height : int } (** h: collapse, or jump to the parent *)
-    | Unfold of { height : int } (** l *)
-    | Wheel of
-        { dir : int
-        ; height : int
-        }
-    | Rows_changed (** the derived rows changed: repair the selection *)
+    | Nav of Tree_listing.Action.t
     | Enter of { height : int }
         (** set-base on a branch row (host wrapper schedules it at apply
             time); fold-toggle on a group row *)
   [@@deriving sexp_of]
 end
 
-(** The visible rows under the fold state — the single row model shared by
-    render, the click handler, and the transitions. *)
+(** The visible rows under the fold state alone (no search). *)
 val visible
   :  branches:Git.Branch_stack.Branch.t list
   -> overrides:bool String.Map.t
   -> Row.t list
+
+(** [Search.Tree_search.displayed_rows] over this pane, on the two
+    model fields it reads (phys-stable host projections). *)
+val displayed_rows
+  :  branches:Git.Branch_stack.Branch.t list
+  -> overrides:bool String.Map.t
+  -> search:Search.Prompt.t
+  -> Row.t list
+
+val visible_rows : branches:Git.Branch_stack.Branch.t list -> Model.t -> Row.t list
+
+(** (matching branch rows, total rows) — the border's counter. *)
+val match_counts : branches:Git.Branch_stack.Branch.t list -> Search.Prompt.t -> int * int
+
+(** The pane's bottom-border search line (prompt/register + counter). *)
+val border
+  :  branches:Git.Branch_stack.Branch.t list
+  -> Search.Prompt.t
+  -> width:int
+  -> Bonsai_term.View.t option
 
 val selection_key : Model.t -> string option
 val scroll : Model.t -> int
@@ -70,9 +76,11 @@ val scroll : Model.t -> int
     first row. *)
 val index_of : Row.t list -> string option -> int
 
-(** Pure transition; total on empty branch lists. *)
+(** Pure transition over the WRAPPED action type ([Search.Action] owns
+    mode dispatch and the search lifecycle). Total on empty branch
+    lists. *)
 val apply_action
   :  branches:Git.Branch_stack.Branch.t list
   -> Model.t
-  -> Action.t
+  -> Action.t Search.Action.t
   -> Model.t

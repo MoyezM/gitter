@@ -35,6 +35,13 @@ let offset ~total ~height scroll =
   Int.max 0 (Int.min scroll (total - Int.max 1 height))
 ;;
 
+(* The row under screen line [y] through the same mapping the renderer
+   uses; None below the last row (blank space is not a row). *)
+let row_at ~total ~height ~y scroll =
+  let row = y + offset ~total ~height scroll in
+  Option.some_if (row < total) row
+;;
+
 (* Scroll so [cursor] is visible, moving as little as possible; [margin]
    keeps it that many rows from either edge (shrunk on tiny panes so the
    bounds can't invert). [margin = 0] means: don't move at all while the

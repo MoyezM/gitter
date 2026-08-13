@@ -240,14 +240,15 @@ let create_sync ~path content : t =
 
 (* Async create: the parse runs in its own domain via [Cpu.in_domain] — the
    C stubs never release the runtime lock, so parsing on the scheduler would
-   stall every frame. (The try covers [Domain.spawn] itself, e.g. domain
-   exhaustion: highlighting failure must never break the diff view.) *)
+   stall every frame. No highlights on exhaustion: highlighting failure
+   must never break the diff view. *)
 let create ~path content : t Async.Deferred.t =
   match session_spec ~path with
   | None -> Async.return None
   | Some (ext, language, query) ->
-    (try Cpu.in_domain (fun () -> build ~ext ~language ~query content) with
-     | _ -> Async.return None)
+    Cpu.in_domain
+      ~fallback:(fun () -> None)
+      (fun () -> build ~ext ~language ~query content)
 ;;
 
 let line_end t i = if i + 1 < Array.length t.starts then t.starts.(i + 1) - 1 else t.length

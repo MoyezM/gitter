@@ -211,7 +211,9 @@ let marker_row ?(nth = 0) doc =
       !seen = nth
     | _ -> false)
 ;;
-let apply ?(height = 20) s model action = State.apply_action s model action ~height
+let apply ?(height = 20) s model action =
+  State.apply_action s model (Gitter.Search.Action.Pane action) ~height
+;;
 
 (* The content rows and their numbers — what "the same diff body" means. *)
 let body doc =
@@ -466,7 +468,7 @@ let () =
    not a motion. *)
 let () =
   let height = 20 in
-  let apply m a = State.apply_action src m a ~height in
+  let apply m a = State.apply_action src m (Gitter.Search.Action.Pane a) ~height in
   (* Cursor on the third marker, low enough on screen that the boundary
      can recede a full rung without leaving the viewport, and with the
      document long enough that no clamp interferes with the pin. *)
@@ -627,6 +629,233 @@ let () =
   check
     "an untracked file's source built after it keeps its rows"
     (Array.length (Document.of_source src ~levels:Int.Map.empty) > 0)
+;;
+
+(* ---- search through the mask (D1-D9) ----------------------------------- *)
+
+module Search = Gitter.Search
+
+let q text = Search.Query.parse text
+let s_event ?(height = 20) s model event =
+  State.apply_action s model (Gitter.Search.Action.Prompt { event; height = 0 }) ~height
+;;
+
+let jump ?(height = 20) s model dir =
+  State.apply_action s model (Gitter.Search.Action.Jump { dir; height = 0 }) ~height
+;;
+
+let type_q ?height s model text =
+  String.fold text ~init:model ~f:(fun m c ->
+    s_event ?height s m (Search.Prompt.Type (Char.to_string c)))
+;;
+
+(* Matches are computed against the whole interleaved file: "line 20"
+   exists only in context git never shipped, and the border counts it as
+   hidden (D1, D6). *)
+let () =
+  let m = type_q src (s_event src Model.initial Search.Prompt.Open) "line 20" in
+  check
+    "a hidden-context match is counted"
+    ([%equal: string option] (State.search_counts src m) (Some "1 \u{00B7} 1 hidden"));
+  check "typing moves nothing (D3)" (m.cursor = 0 && m.scroll = 0);
+  (* The jump reveals minimally and locally: one run opens, at its nearer
+     end, exactly deep enough; the others never move (D4). *)
+  let j = jump src m 1 in
+  check "one run's levels moved, none other" (Map.length j.levels = 1);
+  let doc = State.shown src j in
+  let row = Document.index_of_pos doc j.cursor in
+  check
+    "the jump landed on the revealed match"
+    (match doc.(row).Document.line with
+     | Document.Diff_line (_, _, Context s) -> String.equal s "line 20"
+     | _ -> false);
+  check
+    "currency established"
+    ([%equal: string option] (State.search_counts src j) (Some "1/1"));
+  (* Exactly deep enough: the run still hides its farther rows. *)
+  check
+    "the run's farther end stayed shut"
+    (Array.exists doc ~f:(fun r ->
+       match r.Document.line with
+       | Document.Rule { hidden; _ } -> hidden > 0 && r.pos > j.cursor && r.pos < j.cursor + 10
+       | _ -> false));
+  (* Esc restores the pre-search (levels, cursor, scroll) exactly (L4/D5). *)
+  let c = s_event src j Search.Prompt.Cancel in
+  check "esc restores the levels" (Map.is_empty c.levels);
+  check "esc restores cursor and scroll" (c.cursor = 0 && c.scroll = 0);
+  check "esc keeps no register" (Option.is_none c.search.register);
+  (* Enter keeps the reveal as an ordinary one: X folds it (D5, D7). *)
+  let kept = s_event src j Search.Prompt.Commit in
+  check "commit keeps the reveal" (Map.length kept.levels = 1);
+  check "commit sets the register" ([%equal: string option] kept.search.register (Some "line 20"));
+  let folded = apply src kept (A.Context `Reset) in
+  check "X folds a committed reveal like any other" (Map.is_empty folded.levels)
+;;
+
+(* Committed n/N: vim semantics — strictly after the cursor, wrapping —
+   and the walk shows its position (D6). *)
+let () =
+  let committed =
+    s_event src (type_q src (s_event src Model.initial Search.Prompt.Open) "CHANGED") Search.Prompt.Commit
+  in
+  let n1 = jump src committed 1 in
+  let doc = State.shown src n1 in
+  let text_at m =
+    let doc = State.shown src m in
+    match doc.(Document.index_of_pos doc m.cursor).Document.line with
+    | Document.Diff_line (_, _, (Added s | Removed s | Context s)) -> s
+    | _ -> "?"
+  in
+  ignore (doc : Document.t);
+  check "n finds the first match past the cursor" (String.equal (text_at n1) "CHANGED 10");
+  let n2 = jump src n1 1 in
+  check "n walks on" (String.equal (text_at n2) "CHANGED 30");
+  check
+    "the border shows the walk position"
+    ([%equal: string option] (State.search_counts src n2) (Some "2/3"));
+  let n3 = jump src n2 1 in
+  let n4 = jump src n3 1 in
+  check "n wraps" (String.equal (text_at n4) "CHANGED 10");
+  let p = jump src n4 (-1) in
+  check "N walks backward, wrapping" (String.equal (text_at p) "CHANGED 50")
+;;
+
+(* Removed lines are first-class match candidates (D1). *)
+let () =
+  let m =
+    type_q src (s_event src Model.initial Search.Prompt.Open) "line 10"
+  in
+  check
+    "a removed line matches"
+    ([%equal: string option] (State.search_counts src m) (Some "1"));
+  let j = jump src m 1 in
+  let doc = State.shown src j in
+  check
+    "the jump lands on the removed side"
+    (match doc.(Document.index_of_pos doc j.cursor).Document.line with
+     | Document.Diff_line (_, _, Removed s) -> String.equal s "line 10"
+     | _ -> false)
+;;
+
+(* A same-selection document replacement (staging resync, external
+   save) arrives as [Reveal]: positions shifted with the content, so
+   currency must reset — the border falls back to the total and the
+   next n anchors at the cursor (L1, D9). *)
+let () =
+  let committed =
+    s_event src (type_q src (s_event src Model.initial Search.Prompt.Open) "CHANGED") Search.Prompt.Commit
+  in
+  let jumped = jump src committed 1 in
+  check "jump established currency" (Option.is_some jumped.current_match);
+  let replaced = apply src jumped A.Reveal in
+  check "a document replacement drops currency" (Option.is_none replaced.current_match);
+  check
+    "the border falls back to the total"
+    ([%equal: string option] (State.search_counts src replaced) (Some "3"))
+;;
+
+(* Search.Action resolves against the CURRENT model (burst-safe "/s"). *)
+let () =
+  let both =
+    Gitter.Search.Action.By_mode
+      { if_active = Some (Gitter.Search.Action.Prompt { event = Search.Prompt.Type "s"; height = 0 })
+      ; if_idle = Some (Gitter.Search.Action.Pane (A.Operate `Stage_hunk))
+      }
+  in
+  let active = s_event src Model.initial Search.Prompt.Open in
+  let m = State.apply_action src active both ~height:20 in
+  check "the char lands in the query"
+    ([%equal: string option] (Gitter.Search.Prompt.query m.search) (Some "s"));
+  check "idle resolves to the binding"
+    (match Gitter.Search.Action.resolve ~search:Gitter.Search.Prompt.idle both with
+     | Some (Gitter.Search.Action.Pane (A.Operate `Stage_hunk)) -> true
+     | _ -> false)
+;;
+
+(* The register is a query, not a match set: a document swap (Reset)
+   keeps it, resets currency, and the counts recompute against the new
+   content (L1, D9). *)
+let () =
+  let committed =
+    s_event src (type_q src (s_event src Model.initial Search.Prompt.Open) "CHANGED") Search.Prompt.Commit
+  in
+  let jumped = jump src committed 1 in
+  let swapped = apply src jumped A.Reset in
+  check "reset keeps the register"
+    ([%equal: string option] swapped.search.register (Some "CHANGED"));
+  check "reset drops currency" (Option.is_none swapped.current_match);
+  check "reset drops the reveals" (Map.is_empty swapped.levels);
+  let other =
+    Document.Source.of_rows
+      [ { Document.line = Diff_line (Some 1, Some 1, Added "CHANGED once"); revealed = false; pos = 0 }
+      ; { Document.line = Diff_line (Some 2, Some 2, Context "quiet"); revealed = false; pos = 1 }
+      ]
+  in
+  check
+    "the register re-applies to a new document"
+    ([%equal: string option] (State.search_counts other swapped) (Some "1"))
+;;
+
+(* Search is total on degraded documents (D8): empty and fallback
+   sources walk visible matches with a hidden count of 0. *)
+let () =
+  let registered = { Model.initial with Model.search = { Search.Prompt.idle with register = Some "line" } } in
+  check
+    "an empty document reports 0"
+    ([%equal: string option] (State.search_counts Document.Source.empty registered) (Some "0"));
+  let j = jump Document.Source.empty registered 1 in
+  check "jump on an empty document is total" (j.cursor = 0 && j.scroll = 0);
+  List.iter
+    [ Gitter.Search.Action.Prompt { event = Search.Prompt.Open; height = 0 }
+    ; Prompt { event = Search.Prompt.Commit; height = 0 }
+    ; Prompt { event = Search.Prompt.Cancel; height = 0 }
+    ; Jump { dir = 1; height = 0 }
+    ]
+    ~f:(fun action ->
+      List.iter [ Document.Source.of_rows []; Document.Source.empty ] ~f:(fun s ->
+        let m = State.apply_action s Model.initial action ~height:20 in
+        check "search action on an empty document is total" (m.cursor = 0 && m.scroll = 0)));
+  (* A fallback (inert) source hides nothing: matches are all visible. *)
+  let fallback =
+    Document.Source.of_rows
+      [ { Document.line = Diff_line (Some 1, Some 1, Context "a line"); revealed = false; pos = 0 }
+      ; { Document.line = Diff_line (Some 2, Some 2, Added "beta"); revealed = false; pos = 1 }
+      ]
+  in
+  check
+    "fallback sources have no hidden matches"
+    ([%equal: string option] (State.search_counts fallback registered) (Some "1"))
+;;
+
+(* The one grammar everywhere: negation filters diff rows too (Q3, Q5). *)
+let () =
+  let positions = Document.search_positions src ~query:(q "line !2") in
+  check
+    "negated terms filter rows"
+    (Array.for_all positions ~f:(fun pos ->
+       let doc = Document.of_source src ~levels:(uniform src full_level) in
+       match doc.(Document.index_of_pos doc pos).Document.line with
+       | Document.Diff_line (_, _, (Context s | Added s | Removed s)) ->
+         not (String.mem s '2')
+       | _ -> false));
+  check "the empty query matches nothing in a diff"
+    (Array.is_empty (Document.search_positions src ~query:(q "")))
+;;
+
+(* The typing path REFINES the memoized positions (extending the last
+   positive term, adding terms) instead of rescanning the file; every
+   step must equal a fresh full scan, and non-refinable transitions
+   (backspace) must still be correct via the rescan fallback. *)
+let () =
+  let fresh text = Document.search_positions (source u3) ~query:(q text) in
+  let chain = source u3 in
+  let step text = Document.search_positions chain ~query:(q text) in
+  check "seed scan" ([%equal: int array] (step "line") (fresh "line"));
+  check "extending a term refines soundly" ([%equal: int array] (step "line 2") (fresh "line 2"));
+  check
+    "an added negated term refines soundly"
+    ([%equal: int array] (step "line 2 !5") (fresh "line 2 !5"));
+  check "backspace falls back to a full rescan" ([%equal: int array] (step "line") (fresh "line"))
 ;;
 
 let () = print_endline "All expand tests passed."

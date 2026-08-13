@@ -11,9 +11,27 @@ module Model = struct
          as [dist], so (5, 5) everywhere is git -U5; absent = git's own.
          [step] keeps every rung above [base], which is why a stored end
          always exceeds what git shipped. *)
+    ; search : Search.Prompt.t
+    ; current_match : int option
+      (* the position the last jump landed on — the "2" of "2/7"; None
+         until a jump establishes currency, and again after query edits
+         and document swaps (the next jump anchors at the cursor) *)
+    ; snapshot : ((int * int) Int.Map.t * int * int) option
+      (* (levels, cursor, scroll) at prompt-open — what Esc restores
+         (L4); dropped on commit, so mid-prompt reveals become ordinary
+         ones (D5) *)
     }
 
-  let initial = { cursor = 0; scroll = 0; pan = 0; levels = Int.Map.empty }
+  let initial =
+    { cursor = 0
+    ; scroll = 0
+    ; pan = 0
+    ; levels = Int.Map.empty
+    ; search = Search.Prompt.idle
+    ; current_match = None
+    ; snapshot = None
+    }
+  ;;
 end
 
 module Action = struct
@@ -184,7 +202,105 @@ let remask source (model : Model.t) ~height ~levels ~pin =
     { model with Model.scroll = clamp_scroll after ~height scroll })
 ;;
 
-let apply_action source (model : Model.t) (action : Action.t) ~height =
+(* ---- search over the full file (D1-D9) --------------------------------- *)
+
+let search_query (model : Model.t) = Search.Prompt.parsed model.search
+
+let matches source (model : Model.t) =
+  match Search.Prompt.match_query model.search with
+  | None -> [||]
+  | Some query -> Document.search_positions source ~query
+;;
+
+(* The border's counter (D6, R5): total matches — hidden ones included —
+   then [current/total] once a jump establishes currency, and the hidden
+   count as long as the screen can't show everything. Runs per frame
+   while a query is live, so everything expensive sits behind the
+   Document memos. *)
+let search_counts source (model : Model.t) =
+  match Search.Prompt.match_query model.search with
+  | None -> None
+  | Some query ->
+    let ms = Document.search_positions source ~query in
+    let total = Array.length ms in
+    let hidden = Document.search_hidden source ~query ~levels:model.levels in
+    let position =
+      (* Nested match rather than [Option.bind]: [binary_search]'s
+         result is stack-local under OxCaml and may not escape into a
+         global-expecting closure. *)
+      match
+        match model.current_match with
+        | None -> None
+        | Some pos -> Array.binary_search ms `First_equal_to pos ~compare:Int.compare
+      with
+      | Some i -> sprintf "%d/%d" (i + 1) total
+      | None -> Int.to_string total
+    in
+    Some (if hidden > 0 then sprintf "%s \u{00B7} %d hidden" position hidden else position)
+;;
+
+(* Jump to the next/previous match (D3, D4, D6): anchored at the cursor —
+   inclusively for the first mid-prompt jump ("is it there?" before you
+   go), strictly after it otherwise (vim's n) — wrapping at the ends. A
+   hidden target reveals minimally and locally on arrival, and the jump
+   is a MOTION: the viewport follows the cursor. *)
+let jump source (model : Model.t) ~height ~dir =
+  let inclusive =
+    Search.Prompt.is_active model.search && Option.is_none model.current_match
+  in
+  match Search.Positions.next ~inclusive ~dir ~current:model.cursor (matches source model) with
+  | None -> model
+  | Some pos ->
+    let levels = Document.reveal_pos source ~levels:model.levels ~pos in
+    let doc = Document.of_source source ~levels in
+    let cursor_row = Document.index_of_pos doc pos in
+    { model with
+      Model.levels
+    ; cursor = pos
+    ; current_match = Some pos
+    ; scroll = follow doc ~height ~cursor:cursor_row model.scroll
+    }
+;;
+
+let apply_search source (model : Model.t) (event : Search.Prompt.event) ~height =
+  let was_active = Search.Prompt.is_active model.search in
+  let search = Search.Prompt.apply model.search event in
+  let model' = { model with Model.search } in
+  match event with
+  | Search.Prompt.Open ->
+    if was_active
+    then model'
+    else
+      { model' with
+        Model.snapshot = Some (model.levels, model.cursor, model.scroll)
+      ; current_match = None
+      }
+  | Type _ | Backspace | Recall_prev | Recall_next ->
+    (* D3: typing updates highlights and counts only — the cursor and
+       viewport hold still; currency resets (the next jump anchors at
+       the cursor). *)
+    { model' with Model.current_match = None }
+  | Commit | Implicit_commit ->
+    (* Mid-prompt reveals are kept and become ordinary ones (D5). *)
+    { model' with Model.snapshot = None }
+  | Cancel ->
+    (match model.snapshot with
+     | Some (levels, cursor, scroll) ->
+       let doc = Document.of_source source ~levels in
+       { model' with
+         Model.snapshot = None
+       ; levels
+       ; cursor
+       ; scroll = clamp_scroll doc ~height scroll
+       ; current_match = None
+       }
+     | None -> { model' with Model.snapshot = None; current_match = None })
+  | Clear -> { model' with Model.current_match = None }
+;;
+
+(* The pane's own transitions, over already-RESOLVED actions. The jump
+   walk and mask-reveal live above; [Search.Action] owns mode dispatch. *)
+let apply_plain source (model : Model.t) (action : Action.t) ~height =
   (* Materializing here rather than in the graph is what keeps this
      burst-safe: a second [K] in one frame sees the first one's rows. *)
   let doc = shown source model in
@@ -237,7 +353,15 @@ let apply_action source (model : Model.t) (action : Action.t) ~height =
       remask source model ~height ~levels ~pin
   in
   match action with
-  | Action.Reset -> Model.initial
+  | Action.Reset ->
+    (* A NEW document under a new selection wipes the viewport — but the
+       register is a query, not a match set: it survives the swap and
+       re-applies to the new content, currency reset (L1, D9). The
+       snapshot does NOT survive: its (levels, cursor, scroll) are
+       coordinates of the OLD document (levels keyed by the old source's
+       runs), so a later Esc-cancel must not restore them onto the new
+       one — [Model.initial] leaves it None. *)
+    { Model.initial with Model.search = model.search }
   | Move by -> move doc model ~height ~by
   | Half_page dir -> move doc model ~height ~by:(dir * height / 2)
   | Wheel dir -> wheel doc model ~height ~dir
@@ -262,9 +386,16 @@ let apply_action source (model : Model.t) (action : Action.t) ~height =
   | Reveal ->
     (* A new document under the same selection: re-snap the kept cursor so
        staging targets something visible. [follow] is a no-op when it is
-       already in view, so stage-and-resync doesn't move the viewport. *)
+       already in view, so stage-and-resync doesn't move the viewport.
+       Currency resets — positions shifted with the content, so the old
+       current match may name an unrelated line (L1/D9); the next jump
+       anchors at the cursor. *)
     let v = effective_cursor doc model in
-    { model with Model.cursor = pos_at doc v; scroll = follow doc ~height ~cursor:v model.scroll }
+    { model with
+      Model.cursor = pos_at doc v
+    ; scroll = follow doc ~height ~cursor:v model.scroll
+    ; current_match = None
+    }
   | Pan dir ->
     { model with
       Model.pan =
@@ -274,6 +405,20 @@ let apply_action source (model : Model.t) (action : Action.t) ~height =
           ~max:(max_pan doc ~height ~scroll:model.scroll)
     }
   | Operate _ -> model (* the component's wrapper schedules the effect *)
+;;
+
+(* The full transition over the WRAPPED action type: [Search.Action]
+   owns mode dispatch; jumps and the prompt lifecycle land above; the
+   pane's own actions go to [apply_plain]. Search actions use the
+   machine-input [height] (the pane's canonical), not the stamped one —
+   same dimensions either way. *)
+let apply_action source (model : Model.t) (action : Action.t Search.Action.t) ~height =
+  match Search.Action.resolve ~search:model.search action with
+  | None -> model
+  | Some (Search.Action.Pane a) -> apply_plain source model a ~height
+  | Some (Prompt { event; height = (_ : int) }) -> apply_search source model event ~height
+  | Some (Jump { dir; height = (_ : int) }) -> jump source model ~height ~dir
+  | Some (By_mode _) -> model (* [resolve] never returns one *)
 ;;
 
 (* path:LINE for the cursor row (worktree-side number, old side for

@@ -85,6 +85,28 @@ end
     frame. *)
 val of_source : Source.t -> levels:(int * int) Int.Map.t -> t
 
+(** Positions of the rows matching [query] in the FULL file — context
+    git never shipped and removed lines alike (D1); a match hidden
+    behind an elided rule is first-class. Sorted ascending. Memoized
+    one-slot per source, like the mask. The empty query matches
+    nothing here (the border would otherwise count every line). *)
+val search_positions : Source.t -> query:Search.Query.t -> int array
+
+(** How many of [query]'s matches the mask at [levels] hides — the
+    border's [· K hidden]. Memoized one-slot on (query, levels): the
+    per-match probe must not re-run on every cursor move. *)
+val search_hidden
+  :  Source.t
+  -> query:Search.Query.t
+  -> levels:(int * int) Int.Map.t
+  -> int
+
+(** The minimal, LOCAL level change that makes [pos] visible: only its
+    run's nearer end opens, exactly deep enough to show it — the reveal
+    a jump-to-hidden-match makes on arrival (D4). Identity when [pos]
+    is already visible or in no run. *)
+val reveal_pos : Source.t -> levels:(int * int) Int.Map.t -> pos:int -> (int * int) Int.Map.t
+
 (** [base_context] is the recovered [diff.context]; [run_max key] the
     (t, b) past which each end of that run is fully open. An end's rungs
     live strictly between the two. [runs] lists the keys, for tests. *)

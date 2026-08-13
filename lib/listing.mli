@@ -20,6 +20,10 @@ val wheel_step : int
 (** The viewport mapping — render and click handlers must agree on it. *)
 val offset : total:int -> height:int -> int -> int
 
+(** The row under screen line [y], through the same viewport mapping the
+    renderer uses; None below the last row (blank space is not a row). *)
+val row_at : total:int -> height:int -> y:int -> int -> int option
+
 (** Scroll so [cursor] is visible with minimal movement; [margin] keeps it
     away from the edges (the diff pane's follow), shrunk on tiny panes. *)
 val reveal : ?margin:int -> total:int -> height:int -> cursor:int -> int -> int

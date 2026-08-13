@@ -33,6 +33,21 @@ module Entry = struct
     ; path : string
     ; kind : Kind.t
     }
+
+  (* The staged/unstaged classification, VSCode-style: the index side
+     stages a file; the worktree side (or being untracked/conflicted)
+     keeps it in Changes. A file with both kinds of changes is BOTH. *)
+  let is_staged t =
+    match t.kind with
+    | Kind.Untracked | Unmerged -> false
+    | Changed | Renamed _ -> not (Char.equal t.index '.')
+  ;;
+
+  let is_unstaged t =
+    match t.kind with
+    | Kind.Untracked | Unmerged -> true
+    | Changed | Renamed _ -> not (Char.equal t.worktree '.')
+  ;;
 end
 
 (* git C-quotes paths containing special bytes (core.quotePath, on by

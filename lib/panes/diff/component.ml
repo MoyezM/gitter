@@ -11,7 +11,7 @@ let component
       ~stage_hunk
       ~unstage_hunk
       ~copy_path
-  : Widget.t
+  : Widget.leaf
   =
   fun ~dimensions (local_ graph) ->
   let result, set_result = Bonsai.state None graph in
@@ -41,10 +41,14 @@ let component
         | Bonsai.Computation_status.Inactive -> model
         | Active ((source, height), selection, result, (stage_hunk, unstage_hunk, copy_path))
           ->
-          (match action with
-           | State.Action.Operate op ->
-             (* Effectful keys resolve against the CURRENT model — a
-                same-frame [j, s] burst stages the hunk j moved to. *)
+          (* Everything resolves against the CURRENT model — the key's
+             mode-dependent reading (a stale handler snapshot cannot
+             stage a hunk out of a half-typed query) and the Operate
+             targets (a same-frame [j, s] burst stages the hunk j moved
+             to); the transition resolves identically (idempotent). *)
+          (match Search.Action.resolve ~search:model.State.Model.search action with
+           | None -> model
+           | Some (Search.Action.Pane (State.Action.Operate op)) ->
              let schedule e = Bonsai.Apply_action_context.schedule_event ctx e in
              (match op, selection with
               | `Copy_line, Some (path, _) ->
@@ -75,7 +79,7 @@ let component
                  | _ -> ())
               | _, None -> ());
              model
-           | action -> State.apply_action source model action ~height))
+           | Some action -> State.apply_action source model action ~height))
       machine_input
       graph
   in
@@ -103,7 +107,7 @@ let component
       match selection with
       | None -> Fetch.clear fetch ~set:set_result
       | Some key ->
-        let%bind.Effect () = if key_changed then inject State.Action.Reset else Effect.Ignore in
+        let%bind.Effect () = if key_changed then inject (Search.Action.pane State.Action.Reset) else Effect.Ignore in
         Fetch.load fetch ~key ~set:set_result
   in
   Bonsai.Edge.on_change
@@ -113,70 +117,125 @@ let component
     graph;
   (* When the document is REPLACED under the kept cursor (a revision-bump
      refetch after staging), re-anchor with [Reveal] so hunk staging can't
-     silently retarget. Keyed on the SOURCE's identity: the two-phase
-     highlight swap-in re-delivers the very same source and must not yank
-     the viewport, while a refetch always builds a fresh one — and nothing
-     here materializes a document just to fingerprint it. *)
+     silently retarget. [Fetch.doc_id] is that signal as a value: stable
+     across one load's highlight phases (which must not yank the
+     viewport), distinct per load. *)
   Bonsai.Edge.on_change
-    ~equal:phys_equal
+    ~equal:[%equal: int option]
     ~callback:
       (let%arr inject in
-       fun (_ : Document.Source.t) -> inject State.Action.Reveal)
-    (let%arr doc_input in
-     fst doc_input)
+       fun (_ : int option) -> inject (Search.Action.pane State.Action.Reveal))
+    (let%arr result in
+     match result with
+     | Some (_, Ok payload) -> Some payload.Fetch.doc_id
+     | _ -> None)
     graph;
+  let search_active, commit_search =
+    Search.Action.surface
+      ~inject
+      ~search:
+        (let%arr model in
+         model.State.Model.search)
+  in
   let view =
     let%arr content and model and dimensions in
     Render.render ~content ~model ~dimensions
+  in
+  (* The search prompt/register in the pane's bottom border, with the
+     [total · hidden] / [current/total · hidden] counter (D6, R5). *)
+  let border =
+    let%arr doc_input and model and dimensions in
+    let source, (_ : int) = doc_input in
+    Search.Border.view
+      ~prompt:model.State.Model.search
+      ~counts:(State.search_counts source model)
+      ~width:dimensions.width
   in
   let handler =
     let%arr doc_input and inject and model in
     let source, height = doc_input in
     let doc = State.shown source model in
+    let pane = Search.Action.pane in
+    (* Only this pane's own bindings live here — the keymap, mode
+       dispatch and lifecycle are [Search.Action]'s. Typing moves
+       nothing (D3); the arrows jump between matches without leaving
+       the prompt. Search is total on degraded documents (D8): the
+       prompt opens — and a faded register clears — even over an empty
+       one; every transition is total there too. *)
+    let idle_char c =
+      match c with
+      (* Effectful keys go through the machine — targets resolve at
+         APPLY time. y works even with no document (degrades to the
+         path). *)
+      | 's' -> Some (pane (State.Action.Operate `Stage_hunk))
+      | 'u' -> Some (pane (State.Action.Operate `Unstage_hunk))
+      | 'y' -> Some (pane (State.Action.Operate `Copy_line))
+      | 'j' -> Some (pane (State.Action.Move 1))
+      | 'k' -> Some (pane (State.Action.Move (-1)))
+      (* Context: K pulls more in above the reading position, J below,
+         X folds the boundary at the cursor. notty reports shifted
+         letters as plain uppercase with no modifier. *)
+      | 'K' -> Some (pane (State.Action.Context `Up))
+      | 'J' -> Some (pane (State.Action.Context `Down))
+      | 'X' -> Some (pane (State.Action.Context `Reset))
+      (* Bracket aliases for the half-page jumps. *)
+      | '[' -> Some (pane (State.Action.Half_page 1))
+      | ']' -> Some (pane (State.Action.Half_page (-1)))
+      (* Horizontal pan of the content area (gutter stays put). *)
+      | 'l' -> Some (pane (State.Action.Pan 1))
+      | 'h' -> Some (pane (State.Action.Pan (-1)))
+      | _ -> None
+    in
     fun (event : Event.t) ->
-      match event with
-      (* Effectful keys go through the machine — targets resolve at APPLY
-         time. y works even with no document (degrades to the path). *)
-      | Event.Key_press { key = ASCII 'y'; mods = [] } ->
-        inject (State.Action.Operate `Copy_line)
-      | event ->
-        if Array.is_empty doc
-        then Effect.Ignore
-        else (
-          match event with
-          | Event.Key_press { key = ASCII 's'; mods = [] } ->
-            inject (State.Action.Operate `Stage_hunk)
-          | Key_press { key = ASCII 'u'; mods = [] } ->
-            inject (State.Action.Operate `Unstage_hunk)
-          | Event.Key_press { key = ASCII 'j'; mods = [] }
-        | Key_press { key = Arrow `Down; mods = [] } -> inject (State.Action.Move 1)
-        | Key_press { key = ASCII 'k'; mods = [] }
-        | Key_press { key = Arrow `Up; mods = [] } -> inject (Move (-1))
-        (* Context: K pulls more in above the reading position, J below,
-           X folds the boundary at the cursor. notty reports shifted
-           letters as plain uppercase with no modifier. *)
-        | Key_press { key = ASCII 'K'; mods = [] } -> inject (Context `Up)
-        | Key_press { key = ASCII 'J'; mods = [] } -> inject (Context `Down)
-        | Key_press { key = ASCII 'X'; mods = [] } -> inject (Context `Reset)
-        (* Half-page jumps. *)
-        | Key_press { key = ASCII ('n' | '['); mods = [] } -> inject (Half_page 1)
-        | Key_press { key = ASCII ('p' | ']'); mods = [] } -> inject (Half_page (-1))
-        (* Horizontal pan of the content area (gutter stays put). *)
-        | Key_press { key = ASCII 'l'; mods = [] }
-        | Key_press { key = Arrow `Right; mods = [] } -> inject (Pan 1)
-        | Key_press { key = ASCII 'h'; mods = [] }
-        | Key_press { key = Arrow `Left; mods = [] } -> inject (Pan (-1))
-        | Mouse { kind = Scroll `Down; _ } -> inject (Wheel 1)
-        | Mouse { kind = Scroll `Up; _ } -> inject (Wheel (-1))
-        | Mouse { kind = Left; position; _ } ->
-          (* Map through the scroll this handler PAINTED with (render
-             clamps identically), so the click hits what the user saw. *)
-          inject
-            (Click
-               { row = State.clamp_scroll doc ~height model.scroll + position.y
-               ; column = position.x
-               })
-        | _ -> Effect.Ignore)
+      match Search.Action.keymap ~height ~idle_char event with
+      | Some action -> inject action
+      | None ->
+        (match event with
+         (* Arrows: match jumps while the prompt is active (D3), ordinary
+            motions otherwise. *)
+         | Event.Key_press { key = Arrow `Down; mods = [] } ->
+           inject
+             (Search.Action.both
+                ~active:(Search.Action.jump ~height 1)
+                ~idle:(pane (State.Action.Move 1)))
+         | Key_press { key = Arrow `Up; mods = [] } ->
+           inject
+             (Search.Action.both
+                ~active:(Search.Action.jump ~height (-1))
+                ~idle:(pane (State.Action.Move (-1))))
+         | Key_press { key = Arrow `Right; mods = [] } ->
+           inject (Search.Action.when_idle (pane (State.Action.Pan 1)))
+         | Key_press { key = Arrow `Left; mods = [] } ->
+           inject (Search.Action.when_idle (pane (State.Action.Pan (-1))))
+         (* Half-page jumps: the helix keys. *)
+         | _ when Chord.ctrl 'd' event -> inject (pane (State.Action.Half_page 1))
+         | _ when Chord.ctrl 'u' event -> inject (pane (State.Action.Half_page (-1)))
+         | Mouse { kind = Scroll `Down; _ } -> inject (pane (State.Action.Wheel 1))
+         | Mouse { kind = Scroll `Up; _ } -> inject (pane (State.Action.Wheel (-1)))
+         | Mouse { kind = Left; position; _ } ->
+           (* Map through the scroll this handler PAINTED with (render
+              clamps identically), so the click hits what the user saw —
+              then commit any active prompt (keys table). *)
+           let click =
+             if Array.is_empty doc
+             then []
+             else
+               [ inject
+                   (pane
+                      (State.Action.Click
+                         { row = State.clamp_scroll doc ~height model.scroll + position.y
+                         ; column = position.x
+                         }))
+               ]
+           in
+           Effect.Many (click @ [ inject Search.Action.implicit_commit ])
+         | _ -> Effect.Ignore)
   in
-  ~view, ~handler
+  { Widget.view
+  ; border
+  ; search_active
+  ; commit_search
+  ; handler
+  ; hints = "j/k:move  C-d/C-u:page  /:search  n/N:match  s/u:\u{00B1}hunk  y:copy"
+  }
 ;;

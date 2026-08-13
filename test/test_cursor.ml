@@ -17,7 +17,9 @@ let doc = Document.Source.of_rows rows
 
 (* A long all-diff document for scroll tests. *)
 let many = Document.Source.of_rows (List.init 100 ~f:line)
-let apply ?(height = 20) d model action = State.apply_action d model action ~height
+let apply ?(height = 20) d model action =
+  State.apply_action d model (Gitter.Search.Action.Pane action) ~height
+;;
 let at cursor = { Model.initial with Model.cursor }
 
 (* The state machine transitions a SOURCE; these fixtures have no elided

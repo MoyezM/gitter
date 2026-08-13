@@ -13,20 +13,14 @@ let forward_to_leaf ~handlers (leaf : Solver.Solved.leaf) (event : Event.t) =
   | Some handler ->
     (match event with
      | Event.Mouse { kind; position; mods } ->
-       (* Translate into the leaf's inner coordinate space. Hit-testing uses
-          the full rect (borders included), so a click on the border/title
-          would arrive as row -1 or column -1 and mutate leaf state — drop
-          anything outside the inner box instead. *)
-       let position =
-         { Position.x = position.x - (leaf.rect.x + 1)
-         ; y = position.y - (leaf.rect.y + 1)
-         }
-       in
-       let inner_w = leaf.rect.width - 2 in
-       let inner_h = leaf.rect.height - 2 in
-       if position.x < 0 || position.y < 0 || position.x >= inner_w || position.y >= inner_h
-       then Effect.Ignore
-       else handler (Event.Mouse { kind; position; mods })
+       (* Hit-testing uses the full rect (borders included); the leaf's
+          handler speaks inner coordinates. [Rect.to_inner] owns the
+          frame-inset law and drops clicks on the border/title, which
+          would otherwise arrive as row -1 or column -1 and mutate leaf
+          state. *)
+       (match Geometry.Rect.to_inner leaf.rect ~x:position.x ~y:position.y with
+        | None -> Effect.Ignore
+        | Some (x, y) -> handler (Event.Mouse { kind; position = { Position.x; y }; mods }))
      | event -> handler event)
 ;;
 
@@ -71,11 +65,18 @@ let handle_drag
   | _ -> Effect.Ignore
 ;;
 
+(* The focused pane's implicit-commit effect — what a focus-stealing
+   action fires before focus moves (L3). *)
+let commit_focused ~commits ~focused =
+  Option.value (List.Assoc.find commits focused ~equal:String.equal) ~default:Effect.Ignore
+;;
+
 let handle_mouse
   ~(model : Model.t)
   ~inject
   ~solved
   ~handlers
+  ~commits
   ~(kind : Event.mouse_kind)
   ~(position : Position.t)
   event
@@ -97,14 +98,30 @@ let handle_mouse
               pane still holds focus — silently, since the key is usually
               unbound there. *)
            | Left | Scroll _ ->
-             Effect.Many [ inject (Focus leaf.id); forward_to_leaf ~handlers leaf event ]
+             (* Mouse into ANOTHER pane is a focus-stealing action: the
+                focused pane's active prompt commits first (L3). A click
+                inside the prompting pane instead forwards, so the pane
+                can resolve it against what it rendered before
+                committing. *)
+             let commit =
+               if String.equal leaf.id model.focused
+               then []
+               else [ commit_focused ~commits ~focused:model.focused ]
+             in
+             Effect.Many
+               (commit @ [ inject (Focus leaf.id); forward_to_leaf ~handlers leaf event ])
            | _ -> forward_to_leaf ~handlers leaf event)))
 ;;
 
-let handle_event ~model ~inject ~solved ~handlers (event : Event.t) =
+let handle_event ~model ~inject ~solved ~handlers ~commits (event : Event.t) =
   match event with
-  | Event.Key_press { key = Tab; mods = [] } -> inject Action.Focus_next
+  | Event.Key_press { key = Tab; mods = [] } ->
+    (* Tab is a focus-stealing action too (L3): the focused pane's
+       active prompt implicitly commits, then focus moves — the same
+       mechanism as mouse into another pane, so panes need no Tab
+       handling of their own. *)
+    Effect.Many [ commit_focused ~commits ~focused:model.Model.focused; inject Action.Focus_next ]
   | Key_press _ | Paste _ -> forward_to_focused ~handlers ~focused:model.Model.focused event
   | Mouse { kind; position; _ } ->
-    handle_mouse ~model ~inject ~solved ~handlers ~kind ~position event
+    handle_mouse ~model ~inject ~solved ~handlers ~commits ~kind ~position event
 ;;

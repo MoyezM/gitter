@@ -17,6 +17,11 @@ type payload =
           a binary or mode-only one *)
   ; old_hl : Highlight.t (** HEAD-side session; [Highlight.empty] in phase one *)
   ; new_hl : Highlight.t (** worktree-side session; [Highlight.empty] in phase one *)
+  ; doc_id : int
+      (** stable across the two phases of ONE load, distinct across loads
+          — the "same document or replaced?" signal. The component
+          re-anchors its cursor when it changes; a phase-two highlight
+          swap-in keeps it, so highlights never yank the viewport. *)
   }
 
 (** What to fetch: the file plus WHICH change of it, VSCode-style — the

@@ -13,7 +13,10 @@ open! Core
    the domains are few and short-lived. *)
 [@@@alert "-unsafe_multidomain-do_not_spawn_domains"]
 
-let in_domain f =
-  let domain = Domain.spawn f in
-  Async.In_thread.run (fun () -> Domain.join domain)
+(* [Domain.spawn] itself can raise (domain exhaustion); [fallback] is the
+   caller's stated degradation policy for that case, run on the scheduler. *)
+let in_domain ~fallback f =
+  match Domain.spawn f with
+  | domain -> Async.In_thread.run (fun () -> Domain.join domain)
+  | exception _ -> Async.return (fallback ())
 ;;

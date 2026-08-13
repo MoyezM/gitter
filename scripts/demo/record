@@ -1,14 +1,21 @@
 #!/usr/bin/env bash
 # Record the README demo GIF, unattended and repeatably.
 #
-#   scripts/demo/record [--tape hero] [--out docs/demo/hero.gif] [--keep]
+#   scripts/demo/record [--tape hero] [--out docs/demo/hero.gif] [--keep] [--no-captions]
 #
 #   --tape <name>  tape in scripts/demo/<name>.tape (default: hero)
 #   --out <path>   where the .gif lands (default: docs/demo/<name>.gif)
 #   --keep         leave the fixture repo and raw frames behind for debugging
+#   --no-captions  skip the caption burn — ship the bare recording
 #
 # Pipeline: build the binary -> generate a throwaway fixture repo ->
-# substitute paths into the tape -> vhs -> ASSERT the captured frames.
+# substitute paths into the tape -> vhs -> ASSERT the captured frames ->
+# burn captions (scripts/demo/<tape>-captions.ass, if present).
+#
+# CAPTION TIMING is tuned by eye to THIS tape's beats (see the sibling
+# `timeline` and `caption` scripts). If you change the tape's timing,
+# re-run `timeline` on the fresh gif and re-time the .ass, or the overlays
+# will drift. The assertions above only prove the beats LANDED, not when.
 #
 # That last step is the point. A vhs tape is open loop: it fires keystrokes
 # on a timer at a UI whose panes fill in asynchronously from git. If a fetch
@@ -23,6 +30,7 @@ cd "$root"
 tape_name=hero
 out=""
 keep=0
+captions=1
 
 die() { printf 'error: %s\n' "$1" >&2; exit 1; }
 
@@ -31,6 +39,7 @@ while [ $# -gt 0 ]; do
     --tape) [ $# -ge 2 ] || die "--tape needs an argument"; tape_name="$2"; shift 2 ;;
     --out)  [ $# -ge 2 ] || die "--out needs an argument";  out="$2"; shift 2 ;;
     --keep) keep=1; shift ;;
+    --no-captions) captions=0; shift ;;
     -h|--help) awk 'NR > 1 && /^#/ { sub(/^# ?/, ""); print; next } NR > 1 { exit }' "$0"; exit 0 ;;
     *) die "unknown option: $1 (try --help)" ;;
   esac
@@ -96,6 +105,9 @@ want_anywhere=(
   "values.reduce|the TypeScript diff rendered"
   "bash-|the shell overlay opened"
   "telemetry: ingest|the shell ran a real git command"
+  "2 hidden|the diff elided context into a collapsible rule"
+  "value: float|the elided context was expanded in the gutter"
+  $'⌕ Event|the diff search committed a register'
 )
 for entry in "${want_anywhere[@]}"; do
   needle="${entry%%|*}"
@@ -142,7 +154,13 @@ if [ "$fail" -ne 0 ]; then
 fi
 
 mkdir -p "$(dirname "$out")"
-cp "$gif" "$out"
+captions_ass="$root/scripts/demo/${tape_name}-captions.ass"
+if [ "$captions" -eq 1 ] && [ -f "$captions_ass" ]; then
+  echo "== burning captions ($(basename "$captions_ass"))"
+  "$root/scripts/demo/caption" "$gif" "$captions_ass" "$out"
+else
+  cp "$gif" "$out"
+fi
 
 bytes="$(wc -c < "$out" | tr -d ' ')"
 printf '\nrecorded: %s (%s MB)\n' "$out" "$(echo "scale=1; $bytes/1048576" | bc | sed "s/^\./0./")"

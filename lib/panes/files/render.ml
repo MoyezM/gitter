@@ -94,15 +94,19 @@ let row ~width ~counts ~reviewed ~selected ~side ~query (r : Tree.row) =
       ~used:(2 + (2 * depth) + 2 + String.length name)
       ([ marker; indent depth; seg attrs arrow ] @ Search.Tree_search.underline ~query ~attrs ~candidate:path name)
   | File { entry; name; depth } ->
-    let rename_suffix =
+    (* rename_cells counts DISPLAY cells: the arrow \u{2190} is 3 bytes but
+       1 cell, so [String.length rename_suffix] would overcount [used] by
+       2 and shift the right-aligned counts left. (Same class the Dir arrow
+       above guards.) *)
+    let rename_suffix, rename_cells =
       match entry.kind with
-      | Renamed { from } -> sprintf " \u{2190} %s" from
-      | Changed | Untracked | Unmerged -> ""
+      | Renamed { from } -> sprintf " \u{2190} %s" from, 3 + String.length from
+      | Changed | Untracked | Unmerged -> "", 0
     in
     let path = entry.Git.Status.Entry.path in
     let attrs = with_sel (dim [ Attr.fg Theme.text ]) in
     filled
-      ~used:(2 + (2 * depth) + 2 + String.length name + String.length rename_suffix)
+      ~used:(2 + (2 * depth) + 2 + String.length name + rename_cells)
       ([ marker; indent depth; status_code ~with_sel ~side entry; seg (with_sel []) " " ]
        @ Search.Tree_search.underline ~query ~attrs ~candidate:path name
        @ (if String.is_empty rename_suffix then [] else [ seg attrs rename_suffix ]))

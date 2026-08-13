@@ -299,6 +299,14 @@ let parent_of_current (branches : Branch.t list) =
    parser degrades gracefully when truncated (distant branches attach to
    the trunk). *)
 let dag_commit_cap = 5000
+(* The per-branch merge-base fan-out (the DAG floor) shares the reflog
+   stage's recency budget: hundreds of local branches would otherwise
+   spawn hundreds of [git merge-base] subprocesses on every stack fetch
+   (refresh and each change-detecting poll). The floor that matters comes
+   from the branches being worked on; beyond the cap, commits are bounded
+   by [dag_commit_cap] alone — the same "degrades gracefully when
+   truncated" trade the DAG already makes. *)
+let merge_base_branch_cap = 40
 let reflog_tip_cap = 20
 let reflog_branch_cap = 40
 
@@ -358,6 +366,10 @@ let fetch () =
         let others =
           List.filter_map heads ~f:(fun (n, sha) ->
             Option.some_if (not (String.equal n trunk)) sha)
+          (* Cap BEFORE dedup: [heads] is committerdate-ordered, so this
+             keeps the most-recent branches; [dedup_and_sort] would
+             re-order by sha and lose that. *)
+          |> (fun shas -> List.take shas merge_base_branch_cap)
           |> List.dedup_and_sort ~compare:String.compare
         in
         (match others with

@@ -159,6 +159,8 @@ if [ "$captions" -eq 1 ] && [ -f "$captions_ass" ]; then
   echo "== burning captions ($(basename "$captions_ass"))"
   "$root/scripts/demo/caption" "$gif" "$captions_ass" "$out"
 else
+  [ "$captions" -eq 1 ] \
+    && printf 'warning: no caption track at %s — shipping the bare gif\n' "$captions_ass" >&2
   cp "$gif" "$out"
 fi
 

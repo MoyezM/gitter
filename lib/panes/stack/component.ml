@@ -41,8 +41,18 @@ let component ~status ~base ~set_base : Widget.leaf =
           (match action with
            | Search.Action.Pane (State.Action.Enter _) ->
              (* Base-setting resolves against the CURRENT selection. *)
+             (* Resolve BY KEY: [index_of] defaults a missing/unset
+                selection to row 0, so an Enter with no selection (initial
+                model) or a stale key would silently swap the base to row
+                0's branch — the same guard as [Files.State.target]. *)
              let rows = State.visible_rows ~branches model in
-             (match List.nth rows (State.index_of rows (State.selection_key model)) with
+             let selected =
+               match State.selection_key model with
+               | None -> None
+               | Some key ->
+                 List.find rows ~f:(fun (r : State.Row.t) -> String.equal r.key key)
+             in
+             (match selected with
               | Some { State.Row.kind = Branch b; _ } when not b.is_current ->
                 Bonsai.Apply_action_context.schedule_event ctx (set_base b.name)
               | Some _ | None -> ())

@@ -427,6 +427,19 @@ let () =
        (match m.snapshot with
         | Some (listing, _) -> listing.Listing.Model.selection
         | None -> None)
+       (Some "bench/dune"));
+  (* Assert the value the diff pane actually feeds from, not just the
+     snapshot proxy: with the only match gone the narrowed rows are empty,
+     so effective_selection resolves the pre-prompt selection. *)
+  check "and the diff keeps showing the pre-prompt selection"
+    ([%equal: string option]
+       (State.effective_selection
+          ~entries:shrunk
+          ~rows:(State.visible_rows ~entries:shrunk m)
+          ~search:m.search
+          ~fold:m.fold
+          ~pre_prompt:(Search.Tree_search.pre_prompt_selection m)
+          ~selection:(State.selection_key m))
        (Some "bench/dune"))
 ;;
 

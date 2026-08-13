@@ -8,7 +8,8 @@
 # labeled contact sheet straight from the GIF — one frame every
 # [interval] seconds, stamped with its timestamp — which IS the timing
 # ground truth (the GIF is what ships). Read the beat you care about off
-# the sheet, then set its time in scripts/demo/captions.ass and run
+# the sheet, then set its time in scripts/demo/<tape>-captions.ass
+# (scripts/demo/hero-captions.ass for the hero tape) and run
 # scripts/demo/caption.
 #
 # Deliberately not auto-derived from the frame dump: the dump de-dupes

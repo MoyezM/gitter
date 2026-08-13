@@ -28,8 +28,12 @@ out="${3:-$root/docs/demo/hero.gif}"
 for f in "$gif" "$ass"; do [ -f "$f" ] || { echo "no such file: $f" >&2; exit 1; }; done
 command -v ffmpeg >/dev/null || { echo "ffmpeg not found (enter the dev shell)" >&2; exit 1; }
 
-pal="$(mktemp -t caption_pal.XXXXXX).png"
-trap 'rm -f "$pal"' EXIT
+# A temp DIRECTORY, not a file: `mktemp -t x.png` reserves `x`, not
+# `x.png`, so the reserved file would leak and ffmpeg would write an
+# unreserved path. The palette lives inside; the trap clears both.
+tmpdir="$(mktemp -d -t caption.XXXXXX)"
+trap 'rm -rf "$tmpdir"' EXIT
+pal="$tmpdir/palette.png"
 
 # escape the ass path for ffmpeg's filtergraph (commas/colons)
 esc="$(printf '%s' "$ass" | sed -e 's/\\/\\\\/g' -e "s/'/\\\\'/g" -e 's/:/\\:/g')"

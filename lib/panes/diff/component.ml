@@ -236,6 +236,6 @@ let component
   ; search_active
   ; commit_search
   ; handler
-  ; hints = "j/k:move  C-d/C-u:page  /:search  n/N:match  s/u:\u{00B1}hunk  y:copy"
+  ; hints = "j/k:move  K/J:context  C-d/C-u:page  /:search  n/N:match  s/u:\u{00B1}hunk  y:copy"
   }
 ;;

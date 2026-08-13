@@ -4,15 +4,31 @@ open! Bonsai_term
 let cursor = "\u{258F}"
 
 (* Tail-truncate to [cells], keeping the end (where the cursor is)
-   visible behind a leading ellipsis. Query text is typed ASCII, so
-   bytes are cells. *)
+   visible behind a leading ellipsis. Counts CODEPOINTS, not bytes: the
+   query can hold multibyte UTF-8 (typed via [Prompt.utf8]), and a byte
+   cut would split a codepoint into a garbage cell. Each codepoint is one
+   cell (wide glyphs may overflow; the layout clips those, as the diff
+   render does). *)
 let fit ~cells s =
   let cells = Int.max 0 cells in
-  if String.length s <= cells
+  let n = String.length s in
+  let is_start i = Char.to_int s.[i] land 0xC0 <> 0x80 in
+  let count = String.count s ~f:(fun c -> Char.to_int c land 0xC0 <> 0x80) in
+  if count <= cells
   then s
   else if cells = 0
   then ""
-  else "\u{2026}" ^ String.suffix s (cells - 1)
+  else (
+    (* Keep the last [cells - 1] codepoints; the ellipsis costs one cell. *)
+    let keep = cells - 1 in
+    let rec go i seen =
+      if i = 0 || seen = keep
+      then i
+      else (
+        let i = i - 1 in
+        go i (if is_start i then seen + 1 else seen))
+    in
+    "\u{2026}" ^ String.suffix s (n - go n 0))
 ;;
 
 let view ~(prompt : Prompt.t) ~counts ~width =

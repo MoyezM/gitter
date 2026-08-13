@@ -1,22 +1,19 @@
 open! Core
 
-(* Selection, collapse, and viewport state over ONE file tree, pure. The
-   selection/viewport laws live in [Listing] (shared with the stack pane):
-   key-based selection stable under reorder, successor repair on removal
-   (also what makes staging flow to the next file), wheel scrolls without
-   moving the selection. This module owns only what is files-specific: the
-   collapse set and the dir/file activation semantics.
+(* Selection, collapse, viewport and search state over ONE file tree,
+   pure. The selection/viewport laws live in [Listing] (shared with the
+   stack pane); the search lifecycle in [Search.Tree_search] — this
+   module supplies its pane record and keeps what is files-specific:
+   the dir/file activation semantics and the effectful ops.
 
-   [Rows_changed] is injected by the host whenever the derived rows' keys
-   change (refreshes, external mutations). *)
+   [Rows_changed] is injected by the host whenever the derived rows'
+   keys change (refreshes, external mutations, filter churn). *)
 
 module Model = struct
-  type t =
-    { listing : Listing.Model.t
-    ; collapsed : String.Set.t
-    }
+  (* fold = the collapsed-directory set (full paths). *)
+  type t = String.Set.t Search.Tree_search.Model.t
 
-  let initial = { listing = Listing.Model.initial; collapsed = String.Set.empty }
+  let initial : t = Search.Tree_search.Model.initial String.Set.empty
 end
 
 module Op = struct
@@ -35,27 +32,12 @@ module Op = struct
 end
 
 module Action = struct
-  (* Cursor-moving actions carry the pane height so the transition can
-     reveal the selection (the state machine lives in Git_data, which has
-     no dimensions — the pane handler does). *)
+  (* The navigation vocabulary is [Tree_listing]'s; only what is
+     files-specific stays here — the effectful ops. *)
   type t =
-    | Move of
-        { dir : [ `Up | `Down ]
-        ; height : int
-        }
-    | Activate of
-        { row : int (* absolute row index; click: toggles directories *)
-        ; height : int
-        }
-    | Collapse of { height : int }
-      (* left: fold the dir under the selection, or jump to its parent *)
-    | Expand (* right: unfold the dir under the selection *)
-    | Wheel of
-        { dir : int (* +1 down, -1 up *)
-        ; height : int
-        }
-    | Rows_changed (* the derived rows changed: repair the selection *)
+    | Nav of Tree_listing.Action.t
     | Operate of Op.t (* handled by the HOST's apply_action wrapper *)
+    | Commit_prompt (* [c]: targetless, so not an [Op]; host schedules it *)
   [@@deriving sexp_of]
 end
 
@@ -69,64 +51,91 @@ let selection_key (model : Model.t) = model.listing.selection
 let scroll (model : Model.t) = model.listing.scroll
 let index_of rows selection = Listing.index_of ~key:row_key rows selection
 
-let apply_action ~entries (model : Model.t) (action : Action.t) =
-  let rows collapsed = Tree.rows ~entries ~collapsed in
-  let current = rows model.collapsed in
-  if List.is_empty current
-  then { model with Model.listing = Listing.empty }
-  else (
-    let index = index_of current model.listing.selection in
-    (* Select by index under a (possibly changed) collapse set. *)
-    let select ?height ~collapsed index =
-      { Model.collapsed
-      ; listing = Listing.select ~key:row_key (rows collapsed) ?height ~index model.listing
-      }
+(* The proper directory prefixes of a path — what revealing it must
+   expand (T6, T7). *)
+let ancestor_set path =
+  String.split path ~on:'/'
+  |> List.drop_last_exn
+  |> List.folding_map ~init:None ~f:(fun parent seg ->
+    let dir =
+      match parent with
+      | None -> seg
+      | Some parent -> parent ^ "/" ^ seg
     in
-    match action with
-    | Action.Wheel { dir; height } ->
-      { model with
-        Model.listing =
-          Listing.wheel model.listing ~total:(List.length current) ~height ~dir
-      }
-    | Move { dir = `Up; height } -> select ~height ~collapsed:model.collapsed (index - 1)
-    | Move { dir = `Down; height } -> select ~height ~collapsed:model.collapsed (index + 1)
-    | Activate { row; height } ->
-      let row = Int.clamp_exn row ~min:0 ~max:(List.length current - 1) in
-      (match List.nth_exn current row with
-       | Tree.Dir { path; _ } ->
-         let collapsed =
-           if Set.mem model.collapsed path
-           then Set.remove model.collapsed path
-           else Set.add model.collapsed path
-         in
-         (* Re-locate the dir BY KEY: the toggle reshuffles indices. *)
-         select ~height ~collapsed (index_of (rows collapsed) (Some path))
-       | File _ -> select ~height ~collapsed:model.collapsed row)
-    | Expand ->
-      (match List.nth_exn current index with
-       | Tree.Dir { path; expanded = false; _ } ->
-         let collapsed = Set.remove model.collapsed path in
-         select ~collapsed (index_of (rows collapsed) (Some path))
-       | Dir _ | File _ -> model)
-    | Collapse { height } ->
-      (match List.nth_exn current index with
-       | Tree.Dir { path; expanded = true; _ } ->
-         let collapsed = Set.add model.collapsed path in
-         select ~height ~collapsed (index_of (rows collapsed) (Some path))
-       | Dir _ | File _ ->
-         (match Listing.parent_index ~depth:Tree.depth current index with
-          | Some i -> select ~height ~collapsed:model.collapsed i
-          | None -> model))
-    | Rows_changed ->
-      { model with Model.listing = Listing.rows_changed ~key:row_key current model.listing }
-    | Operate (_ : Op.t) -> model (* the host wrapper schedules the effect *))
+    Some dir, dir)
+  |> String.Set.of_list
+;;
+
+(* The five row facts and the reveal that make this pane searchable:
+   every row matches on its full path; directories carry descendants. *)
+let pane ~entries : (Tree.row, String.Set.t) Search.Tree_search.pane =
+  { rows = (fun collapsed -> Tree.rows ~entries ~collapsed)
+  ; all_rows = (fun () -> Tree.rows ~entries ~collapsed:String.Set.empty)
+  ; key = row_key
+  ; depth = Tree.depth
+  ; is_parent =
+      (function
+        | Tree.Dir _ -> true
+        | File _ -> false)
+  ; candidate = (fun r -> Some (row_key r))
+  ; reveal = (fun collapsed ~key -> Set.diff collapsed (ancestor_set key))
+  }
+;;
+
+let displayed_rows ~entries ~collapsed ~search =
+  Search.Tree_search.displayed_rows (pane ~entries) ~fold:collapsed ~search
+;;
+
+let visible_rows ~entries (model : Model.t) =
+  displayed_rows ~entries ~collapsed:model.fold ~search:model.search
+;;
+
+let match_counts ~entries search = Search.Tree_search.match_counts (pane ~entries) search
+
+(* Whether [n]/[N] would actually jump — a register with a live match. *)
+let can_jump ~entries search = Search.Tree_search.can_jump (pane ~entries) search
+
+(* What folding means here: directory rows fold into the collapsed-path
+   set; files are leaves. *)
+let caps ~entries : (Tree.row, String.Set.t) Tree_listing.caps =
+  { pane = pane ~entries
+  ; fold_state =
+      (function
+        | Tree.Dir { expanded; _ } -> if expanded then `Open else `Closed
+        | File _ -> `Leaf)
+  ; set_folded =
+      (fun fold ~key ~folded -> if folded then Set.add fold key else Set.remove fold key)
+  }
+;;
+
+(* The pane's own transitions, over already-RESOLVED actions —
+   [Search.Tree_search.apply] owns the mode dispatch and the search
+   lifecycle; [Tree_listing.apply] owns navigation. *)
+let apply_plain ~entries (model : Model.t) (action : Action.t) =
+  match action with
+  | Action.Commit_prompt | Operate _ -> model (* the host wrapper schedules the effect *)
+  | Nav nav -> Tree_listing.apply (caps ~entries) model nav
+;;
+
+let apply_action ~entries (model : Model.t) (action : Action.t Search.Action.t) =
+  Search.Tree_search.apply (pane ~entries) ~apply_pane:(apply_plain ~entries) model action
 ;;
 
 (* The operation target under the CURRENT selection: a file's path, or a
-   directory's whole subtree path (git pathspecs make that one op). *)
+   directory's whole subtree path (git pathspecs make that one op).
+   Resolved against the displayed rows — ops only fire idle, where those
+   are the folded tree. *)
 let target ~entries (model : Model.t) =
-  let rows = Tree.rows ~entries ~collapsed:model.collapsed in
-  List.nth rows (index_of rows model.listing.selection) |> Option.map ~f:row_key
+  (* Look the selection up BY KEY — [index_of] defaults a missing key to
+     row 0, which for an effectful op (stage/unstage/discard) would
+     retarget to the wrong file during the brief window before the
+     [Rows_changed] repair runs. No matching row ⇒ no target ⇒ the host
+     wrapper schedules nothing. *)
+  match model.listing.selection with
+  | None -> None
+  | Some key ->
+    let rows = visible_rows ~entries model in
+    List.find rows ~f:(fun r -> String.equal (row_key r) key) |> Option.map ~f:row_key
 ;;
 
 (* The file under the selection, if any — a directory row selects
@@ -136,3 +145,18 @@ let selection rows ~cursor =
   | Some (Tree.File { entry; _ }) -> Some entry.Git.Status.Entry.path
   | Some (Dir _) | None -> None
 ;;
+
+(* The file feeding the diff pane. When an active search narrows the
+   visible rows to nothing, the PRE-PROMPT selection remains effective —
+   the diff keeps showing it (T5) — resolved against the unfiltered tree
+   in that rare branch. Takes model pieces (not the model) so hosts feed
+   it phys-stable projections; [pre_prompt] is
+   [Search.Tree_search.pre_prompt_selection]. *)
+let effective_selection ~entries ~rows ~search ~fold ~pre_prompt ~selection:key =
+  match rows with
+  | [] when Search.Prompt.is_active search ->
+    let rows = Tree.rows ~entries ~collapsed:fold in
+    selection rows ~cursor:(index_of rows pre_prompt)
+  | rows -> selection rows ~cursor:(index_of rows key)
+;;
+

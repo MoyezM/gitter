@@ -13,8 +13,8 @@ let code_char c = if Char.equal c '.' then ' ' else c
 type status =
   [ `Loading
   | `Error of Error.t
-  | `Empty of string
-  | `Tree
+  | `Empty of string (* unconditional message — no tree regardless *)
+  | `Loaded of string (* the idle message; tree-vs-message derived below (T5) *)
   ]
 
 (* Each pane shows only ITS side's letter — the staged pane the index
@@ -63,7 +63,7 @@ let count_segs ~with_sel = function
 (* Row shape, lazygit-style: the whole row indents together, so the status
    code sits immediately beside its name instead of in a detached column;
    +/- counts sit right-aligned (dropped when the name leaves no room). *)
-let row ~width ~counts ~reviewed ~selected ~side (r : Tree.row) =
+let row ~width ~counts ~reviewed ~selected ~side ~query (r : Tree.row) =
   let with_sel attrs = if selected then Theme.selection_bg :: attrs else attrs in
   let marker =
     if selected then seg (with_sel Theme.header) "\u{276F} " else seg (with_sel []) "  "
@@ -86,38 +86,62 @@ let row ~width ~counts ~reviewed ~selected ~side (r : Tree.row) =
     else View.hcat (segs @ [ seg (with_sel []) (String.make (Int.max 0 (width - used)) ' ') ])
   in
   match r with
-  | Tree.Dir { name; depth; expanded; _ } ->
+  | Tree.Dir { path; name; depth; expanded } ->
     let arrow = if expanded then "\u{25BE} " else "\u{25B8} " in
+    let attrs = with_sel (dim Theme.header) in
     (* arrow+space is 2 cells (String.length would overcount the glyph). *)
     filled
       ~used:(2 + (2 * depth) + 2 + String.length name)
-      [ marker; indent depth; seg (with_sel (dim Theme.header)) (arrow ^ name) ]
+      ([ marker; indent depth; seg attrs arrow ] @ Search.Tree_search.underline ~query ~attrs ~candidate:path name)
   | File { entry; name; depth } ->
-    let label =
+    (* rename_cells counts DISPLAY cells: the arrow \u{2190} is 3 bytes but
+       1 cell, so [String.length rename_suffix] would overcount [used] by
+       2 and shift the right-aligned counts left. (Same class the Dir arrow
+       above guards.) *)
+    let rename_suffix, rename_cells =
       match entry.kind with
-      | Renamed { from } -> sprintf "%s \u{2190} %s" name from
-      | Changed | Untracked | Unmerged -> name
+      | Renamed { from } -> sprintf " \u{2190} %s" from, 3 + String.length from
+      | Changed | Untracked | Unmerged -> "", 0
     in
+    let path = entry.Git.Status.Entry.path in
+    let attrs = with_sel (dim [ Attr.fg Theme.text ]) in
     filled
-      ~used:(2 + (2 * depth) + 2 + String.length label)
-      [ marker
-      ; indent depth
-      ; status_code ~with_sel ~side entry
-      ; seg (with_sel []) " "
-      ; seg (with_sel (dim [ Attr.fg Theme.text ])) label
-      ]
+      ~used:(2 + (2 * depth) + 2 + String.length name + rename_cells)
+      ([ marker; indent depth; status_code ~with_sel ~side entry; seg (with_sel []) " " ]
+       @ Search.Tree_search.underline ~query ~attrs ~candidate:path name
+       @ (if String.is_empty rename_suffix then [] else [ seg attrs rename_suffix ]))
 ;;
 
-let render ~(status : status) ~rows ~cursor ~scroll ~counts ~reviewed ~side ~(dimensions : Dimensions.t) =
+let render
+  ~(status : status)
+  ~rows
+  ~cursor
+  ~scroll
+  ~counts
+  ~reviewed
+  ~side
+  ~search
+  ~(dimensions : Dimensions.t)
+  =
   match status with
   | `Loading -> seg Theme.context " loading git status..."
   | `Error e -> seg Theme.untracked (" git error: " ^ Error.to_string_hum e)
   | `Empty message -> seg Theme.context (" " ^ message)
-  | `Tree ->
+  (* [rows] is the VISIBLE list — narrowed while a search is active — so
+     emptiness only means "nothing to change" when no search is
+     filtering: a zero-match query must render an empty tree with its
+     0/N counter, not the idle message (T5). *)
+  | `Loaded message
+    when List.is_empty rows && not (Search.Prompt.is_active search) ->
+    seg Theme.context (" " ^ message)
+  | `Loaded (_ : string) ->
     List_view.render
       ~rows
       ~scroll
       ~cursor
       ~dimensions
-      ~row:(fun ~selected ~width r -> row ~width ~counts ~reviewed ~selected ~side r)
+      ~row:
+        ((* Parse the query ONCE per render — [underline] runs per row. *)
+         let query = Search.Prompt.parsed search in
+         fun ~selected ~width r -> row ~width ~counts ~reviewed ~selected ~side ~query r)
 ;;

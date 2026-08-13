@@ -36,7 +36,8 @@ let bench path =
   printf "  %-34s %8d\n" "(diff lines)" line_count;
   let%bind (_ : string) =
     time_async "git show HEAD:file (subprocess)" (fun () ->
-      Gitter.Git.Queries.file_at_head path >>| Result.ok >>| Option.value ~default:"")
+      Gitter.Git.Runner.git [ "show"; "HEAD:" ^ path ]
+      >>| Result.ok >>| Option.value ~default:"")
   in
   let%bind new_content =
     time_async "read worktree file" (fun () ->

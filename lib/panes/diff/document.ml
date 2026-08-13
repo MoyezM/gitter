@@ -55,6 +55,15 @@ module Source = struct
          (first, last) positions, for pinning a directional reveal *)
     ; base : int (* the deepest context git itself shipped *)
     ; mutable memo : ((int * int) Int.Map.t * row array) option
+    ; search : Search.Positions.t
+      (* the memoized match-position set (a 646K-row file must not
+         rescan per frame); mutable inside, so every constructor below
+         creates it FRESH - a [with] copy would alias another source's
+         cache (the memo-poisoning class) *)
+    ; mutable hidden_memo : (Search.Query.t * (int * int) Int.Map.t * int) option
+      (* the border's hidden-match count, keyed (query, levels): it only
+         changes when they do, and the per-match visibility probe must
+         not re-run on every cursor move *)
     }
 
   let empty =
@@ -66,6 +75,8 @@ module Source = struct
     ; runs = Int.Map.empty
     ; base = 0
     ; memo = None
+    ; search = Search.Positions.create ()
+    ; hidden_memo = None
     }
   ;;
 
@@ -77,8 +88,10 @@ module Source = struct
     ; up = Array.create ~len:(Array.length full) 0
     ; down = Array.create ~len:(Array.length full) 0
     ; runkey = Array.create ~len:(Array.length full) (-1)
-    ; memo = None (* [empty]'s memo is MUTATED by [of_source]; inheriting it
-                     via [with] would serve its cached rows for this source *)
+    ; memo = None (* [empty]'s memos are MUTATED by their readers; inheriting
+                     them via [with] would serve another source's cache *)
+    ; search = Search.Positions.create ()
+    ; hidden_memo = None
     }
   ;;
 
@@ -217,9 +230,57 @@ module Source = struct
         Array.mapi cells ~f:(fun pos (line, shipped) ->
           { line; revealed = not shipped; pos })
       in
-      { hunks; full; up; down; runkey; runs = !runs; base = !base; memo = None }
+      { hunks
+      ; full
+      ; up
+      ; down
+      ; runkey
+      ; runs = !runs
+      ; base = !base
+      ; memo = None
+      ; search = Search.Positions.create ()
+      ; hidden_memo = None
+      }
   ;;
 end
+
+(* Search runs over EVERY row of the full interleaved file — context git
+   never shipped and removed lines alike (D1). The match unit is a row;
+   the candidate is its text. Rules and file headers are not lines.
+   Memoization and the typing-path refinement live in
+   [Search.Positions]. *)
+let search_positions (s : Source.t) ~query =
+  Search.Positions.find
+    s.Source.search
+    ~query
+    ~length:(Array.length s.Source.full)
+    ~candidate:(fun i ->
+      match s.Source.full.(i).line with
+      | Diff_line (_, _, (Context text | Added text | Removed text)) -> Some text
+      | File_header _ | Rule _ -> None)
+;;
+
+(* The minimal, LOCAL reveal that shows [pos] (D4): only its run's nearer
+   end opens, exactly deep enough — the same end [K]/[J] would open
+   there, triggered by arrival. Identity when [pos] is already visible
+   under [levels] or belongs to no run. *)
+let reveal_pos (s : Source.t) ~levels ~pos =
+  if pos < 0 || pos >= Array.length s.Source.runkey
+  then levels
+  else (
+    let key = s.Source.runkey.(pos) in
+    if key < 0
+    then levels (* shipped: always visible *)
+    else (
+      let up = s.Source.up.(pos)
+      and down = s.Source.down.(pos) in
+      let t, b = Option.value (Map.find levels key) ~default:(0, 0) in
+      if up <= t || down <= b
+      then levels
+      else if up <= down
+      then Map.set levels ~key ~data:(up, b)
+      else Map.set levels ~key ~data:(t, down)))
+;;
 
 let base_context (s : Source.t) = s.base
 let run_max (s : Source.t) key =
@@ -394,4 +455,38 @@ let of_source (s : Source.t) ~levels =
     let rows = mask s ~levels in
     s.Source.memo <- Some (levels, rows);
     rows
+;;
+
+(* Is the row at [pos] shown under [doc], or masked behind a rule? *)
+let pos_visible (doc : row array) pos =
+  let i =
+    match
+      Array.binary_search doc `Last_less_than_or_equal_to pos ~compare:(fun r p ->
+        Int.compare r.pos p)
+    with
+    | Some i -> i
+    | None -> 0
+  in
+  i < Array.length doc
+  && doc.(i).pos = pos
+  &&
+  match doc.(i).line with
+  | Diff_line _ -> true
+  | Rule _ | File_header _ -> false
+;;
+
+(* How many of [query]'s matches the mask at [levels] is hiding — the
+   border's "· K hidden". Memoized: it changes only with (query,
+   levels), and the per-match probe must not re-run per cursor move. *)
+let search_hidden (s : Source.t) ~query ~levels =
+  match s.Source.hidden_memo with
+  | Some (q, l, hidden)
+    when Search.Query.equal q query && Map.equal [%equal: int * int] l levels -> hidden
+  | _ ->
+    let doc = of_source s ~levels in
+    let hidden =
+      Array.count (search_positions s ~query) ~f:(fun p -> not (pos_visible doc p))
+    in
+    s.Source.hidden_memo <- Some (query, levels, hidden);
+    hidden
 ;;

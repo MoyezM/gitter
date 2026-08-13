@@ -64,30 +64,51 @@ let handle_palette ~inject ~commands ~query ~cursor (event : Event.t) =
   | Key_press _ | Paste _ | Mouse _ -> Effect.Ignore
 ;;
 
-let component ~(commands : Commands.t list Bonsai.t) (base : Widget.t) : Widget.t =
-  fun ~dimensions (local_ graph) ->
+let component
+  ~(commands : Commands.t list Bonsai.t)
+  (base : Widget.screen)
+  ~dimensions
+  (local_ graph)
+  : Widget.screen
+  =
   let model, inject =
     Bonsai.state_machine
       ~default_model:State.Model.Closed
       ~apply_action:State.apply_action
       graph
   in
-  let ~view:base_view, ~handler:base_handler = base ~dimensions graph in
   let view =
-    let%arr base_view and model and commands and dimensions in
+    let%arr base_view = base.Widget.view
+    and model
+    and commands
+    and dimensions in
     overlay ~model ~commands ~dimensions ~base:base_view
   in
   let handler =
-    let%arr base_handler and inject and model and commands in
+    let%arr base_handler = base.Widget.handler
+    and inject
+    and model
+    and commands
+    and search_active = base.Widget.search_active in
     fun (event : Event.t) ->
       match model with
       | State.Model.Menu path -> handle_menu ~inject ~commands ~path event
       | Palette { query; cursor } -> handle_palette ~inject ~commands ~query ~cursor event
       | Closed ->
         (match event with
-         | Event.Key_press { key = ASCII ' '; mods = [] } ->
+         (* While a pane's search prompt is active, Space belongs to the
+            query — nothing printable is stolen (keys table); the pane
+            below appends it. The screen carries that fact here — no
+            side channel. *)
+         | Event.Key_press { key = ASCII ' '; mods = [] } when not search_active ->
            inject State.Action.Open_menu
          | event -> base_handler event)
   in
-  ~view, ~handler
+  let hints =
+    (* Space is the MENU's binding — appended here once, not restated
+       by every leaf. *)
+    let%arr base_hints = base.Widget.hints in
+    base_hints ^ "  Space:menu"
+  in
+  { base with Widget.view; handler; hints }
 ;;

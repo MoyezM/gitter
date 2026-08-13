@@ -13,7 +13,7 @@ open Bonsai.Let_syntax
    Layout's state is created here so its control handle can feed the menu's
    command tree — the pattern every layer with commands will follow. *)
 
-let layout_tree ~(data : Git_data.t) ~commit ~copy_path =
+let layout_tree ~(data : Git_data.t) ~copy_path =
   let diff_title =
     let%arr selection = data.selection in
     match selection with
@@ -21,14 +21,6 @@ let layout_tree ~(data : Git_data.t) ~commit ~copy_path =
     | Some (path, `Unstaged) -> path
     | Some (path, `Committed base) -> sprintf "%s (vs %s)" path base
     | None -> "Diff"
-  in
-  let files_status rows ~empty =
-    let%arr load = data.load
-    and rows in
-    match load with
-    | Git_data.Load.Not_loaded | Loading -> `Loading
-    | Loaded (Error e) -> `Error e
-    | Loaded (Ok _) -> if List.is_empty rows then `Empty empty else `Tree
   in
   let stack_status =
     let%arr load = data.load
@@ -61,36 +53,9 @@ let layout_tree ~(data : Git_data.t) ~commit ~copy_path =
            ; View.text " "
            ])
   in
-  let no_reviews = Bonsai.return String.Set.empty in
-  let files_pane ~id ~title ~title_right ~status ~counts ~reviewed ~side
-        (section : Git_data.section_data)
-    =
-    Layout.Component.Tree.leaf
-      ~id
-      ~title
-      ~title_right
-      (Panes.Files.Component.component
-         ~status
-         ~rows:section.rows
-         ~cursor:section.cursor
-         ~scroll:section.scroll
-         ~counts
-         ~reviewed
-         ~side
-         ~commit
-         ~inject:section.inject)
-  in
-  (* The committed pane: this branch vs its base. *)
-  let committed_status =
-    let%arr load = data.load
-    and rows = data.committed.rows
-    and base = data.base in
-    match load with
-    | Git_data.Load.Not_loaded | Loading -> `Loading
-    | Loaded _ ->
-      (match base with
-       | None -> `Empty "no base branch"
-       | Some b -> if List.is_empty rows then `Empty ("nothing committed vs " ^ b) else `Tree)
+  (* A section pane is its assembled [Input] plus chrome (id/titles). *)
+  let files_pane ~id ~title ~title_right input =
+    Layout.Component.Tree.leaf ~id ~title ~title_right (Panes.Files.Component.component input)
   in
   let committed_title =
     let%arr base = data.base in
@@ -100,7 +65,7 @@ let layout_tree ~(data : Git_data.t) ~commit ~copy_path =
   in
   (* The committed title bar carries counts plus review progress. *)
   let committed_title_right =
-    let%arr counts = counts_view data.committed_counts
+    let%arr counts = counts_view data.committed.Panes.Files.Component.Input.counts
     and reviewed, total = data.review_progress in
     let progress =
       if total = 0
@@ -128,40 +93,20 @@ let layout_tree ~(data : Git_data.t) ~commit ~copy_path =
                   ~id:"committed"
                   ~title:committed_title
                   ~title_right:committed_title_right
-                  ~status:committed_status
-                  ~counts:data.committed_counts
-                  ~reviewed:data.reviewed
-                  ~side:`Committed
                   data.committed )
             ; ( 1.
               , files_pane
                   ~id:"staged"
                   ~title:(Bonsai.return "Staged")
                   ~title_right:
-                    (counts_view
-                       (let%arr stat = data.diffstat in
-                        stat.Git_data.staged_lines))
-                  ~status:(files_status data.staged.rows ~empty:"nothing staged")
-                  ~counts:
-                    (let%arr stat = data.diffstat in
-                     stat.Git_data.staged_lines)
-                  ~reviewed:no_reviews
-                  ~side:`Staged
+                    (counts_view data.staged.Panes.Files.Component.Input.counts)
                   data.staged )
             ; ( 2.
               , files_pane
                   ~id:"changes"
                   ~title:(Bonsai.return "Changes")
                   ~title_right:
-                    (counts_view
-                       (let%arr stat = data.diffstat in
-                        stat.Git_data.unstaged_lines))
-                  ~status:(files_status data.unstaged.rows ~empty:"working tree clean")
-                  ~counts:
-                    (let%arr stat = data.diffstat in
-                     stat.Git_data.unstaged_lines)
-                  ~reviewed:no_reviews
-                  ~side:`Unstaged
+                    (counts_view data.unstaged.Panes.Files.Component.Input.counts)
                   data.unstaged )
             ; ( 1.
               , leaf
@@ -222,34 +167,15 @@ let commands ~(layout : Layout.Component.Controls.t Bonsai.t) ~refresh ~commit ~
 (* Ctrl-C quits — but only when the event reaches this layer. The shell
    overlay wraps OUTSIDE it and, while visible, forwards Ctrl-C to the
    shell as SIGINT (with a hint pointing at Ctrl-T), so quitting requires
-   leaving the terminal first. notty reports Ctrl-C as UPPERCASE ASCII
-   'C' (sometimes as a Uchar) — match every form, same as
-   [Bonsai_term.Loop.make_app_exit_on_ctrlc], which this replaces. *)
-let exit_on_ctrlc ~exit (base : Widget.t) : Widget.t =
-  fun ~dimensions (local_ graph) ->
-  let ~view, ~handler:base_handler = base ~dimensions graph in
+   leaving the terminal first. Replaces
+   [Bonsai_term.Loop.make_app_exit_on_ctrlc]. *)
+let exit_on_ctrlc ~exit (base : Widget.screen) : Widget.screen =
   let handler =
-    let%arr base_handler in
+    let%arr base_handler = base.Widget.handler in
     fun (event : Event.t) ->
-      match event with
-      | Key_press { key = ASCII ('C' | 'c'); mods = [ Ctrl ] } -> exit ()
-      | Key_press { key = Uchar u; mods = [ Ctrl ] }
-        when Uchar.equal (Uchar.of_char 'C') u || Uchar.equal (Uchar.of_char 'c') u ->
-        exit ()
-      | event -> base_handler event
+      if Chord.ctrl 'c' event then exit () else base_handler event
   in
-  ~view, ~handler
-;;
-
-(* Context hints for the status bar: the focused pane's keys. *)
-let hints ~focused =
-  match focused with
-  | "committed" -> "j/k:move  r:reviewed  y:copy path  Space:menu  Tab:pane"
-  | "staged" -> "j/k:move  u:unstage  c:commit  y:copy path  Space:menu  Tab:pane"
-  | "changes" -> "j/k:move  s:stage  d:discard  c:commit  y:copy path  Tab:pane"
-  | "diff" -> "j/k:move  n/p:page  h/l:pan  s/u:\u{00B1}hunk  y:copy path"
-  | "stack" -> "j/k:move  h/l:fold  Enter:set base  Space:menu  Tab:pane"
-  | _ -> "Space:menu  Tab:focus  C-t:term  Ctrl-C:quit"
+  { base with Widget.handler }
 ;;
 
 let app ~exit ~(dimensions : Dimensions.t Bonsai.t) (local_ graph)
@@ -269,22 +195,17 @@ let app ~exit ~(dimensions : Dimensions.t Bonsai.t) (local_ graph)
      whatever they say at expiry is what returns. A newer notification
      restarts the window (the generation guard disarms stale timers). *)
   let notice, set_notice = Bonsai.state None graph in
-  let notice_generation = ref 0 in
+  (* The expiry timer is a latest-wins run: a newer notification's bump
+     disarms a stale timer's clear. *)
+  let notice_latest = Latest.create () in
   let notify =
     let%arr set_notice in
     fun kind message ->
-      let%bind.Effect mine =
-        Effect.of_thunk (fun () ->
-          incr notice_generation;
-          !notice_generation)
-      in
       let%bind.Effect () = set_notice (Some (message, kind)) in
-      let%bind.Effect () =
-        Effect.of_deferred_thunk (fun () ->
-          Async.Clock_ns.after (Time_ns.Span.of_sec 5.))
-      in
-      let%bind.Effect current = Effect.of_thunk (fun () -> !notice_generation) in
-      if current = mine then set_notice None else Effect.Ignore
+      Latest.run
+        notice_latest
+        ~fetch:(fun () -> Async.Clock_ns.after (Time_ns.Span.of_sec 5.))
+        ~commit:(fun () -> set_notice None)
   in
   (* Git_data's interface: Some = post an error, None = an op succeeded,
      drop any stale error right away (and disarm its timer). *)
@@ -292,9 +213,7 @@ let app ~exit ~(dimensions : Dimensions.t Bonsai.t) (local_ graph)
     let%arr notify and set_notice in
     function
     | Some message -> notify `Error message
-    | None ->
-      let%bind.Effect () = Effect.of_thunk (fun () -> incr notice_generation) in
-      set_notice None
+    | None -> Effect.Many [ Latest.invalidate notice_latest; set_notice None ]
   in
   (* The destructive discard is pre-wrapped in the confirm modal — handed
      to Git_data, which owns the per-section op wiring. *)
@@ -321,26 +240,23 @@ let app ~exit ~(dimensions : Dimensions.t Bonsai.t) (local_ graph)
       | Error (_ : Error.t) ->
         Effect.Many [ write_to_tty (Clipboard.osc52 path); notify `Info ("copied " ^ path) ]
   in
+  (* The commit-message prompt, handed to Git_data as an op factory (it
+     wires [c] through the section machines — burst-safe) and reused for
+     the menu entry below. *)
+  let commit_confirm =
+    let%arr modal_controls in
+    fun ~commit ->
+      modal_controls.Modal.Component.Controls.prompt ~title:"Commit message" ~on_submit:commit
+  in
   let data =
-    Git_data.create ~discard_confirm ~copy_path ~set_notice:set_error_notice graph
-  in
-  let commit =
-    let%arr modal_controls and commit = data.commit in
-    modal_controls.Modal.Component.Controls.prompt
-      ~title:"Commit message"
-      ~on_submit:commit
-  in
-  let term =
-    Term_pane.Component.create
-      ~dimensions:screen_dimensions
-      ~on_hide:data.refresh
-      ~on_ctrl_c:
-        (let%arr notify in
-         notify `Info "Ctrl-T leaves the terminal — then Ctrl-C quits gitter")
+    Git_data.create
+      ~discard_confirm
+      ~commit_confirm
+      ~copy_path
+      ~set_notice:set_error_notice
       graph
   in
-  let term_controls = Term_pane.Component.controls term in
-  let layout_tree = layout_tree ~data ~commit ~copy_path in
+  let layout_tree = layout_tree ~data ~copy_path in
   (* The stack and committed panes start hidden — Space w s / w c. *)
   let layout_model, layout_inject =
     Layout.Component.state
@@ -349,20 +265,42 @@ let app ~exit ~(dimensions : Dimensions.t Bonsai.t) (local_ graph)
       graph
   in
   let controls = Layout.Component.controls ~inject:layout_inject in
+  (* The layout IS the screen: every combinator below is
+     [screen -> screen] over the instantiated record, so the search
+     surface and the focused pane's hints ride to the top with no side
+     channels, and nothing at screen level discards dimensions. *)
   let screen =
-    Layout.Component.component layout_tree ~model:layout_model ~inject:layout_inject
+    Layout.Component.component
+      layout_tree
+      ~model:layout_model
+      ~inject:layout_inject
+      ~dimensions:screen_dimensions
+      graph
   in
+  let term =
+    Term_pane.Component.create
+      ~dimensions:screen_dimensions
+      ~on_show:screen.Widget.commit_search_prompts
+      ~on_hide:data.refresh
+      ~on_ctrl_c:
+        (let%arr notify in
+         notify `Info "Ctrl-T leaves the terminal — then Ctrl-C quits gitter")
+      graph
+  in
+  let term_controls = Term_pane.Component.controls term in
   let with_menu =
     Menu.Component.component
       ~commands:
         (commands
            ~layout:controls
            ~refresh:data.refresh
-           ~commit
+           ~commit:data.commit_prompt
            ~terminal:
              (let%arr c = term_controls in
               c.Term_pane.Component.Controls.toggle))
       screen
+      ~dimensions:screen_dimensions
+      graph
   in
   (* Stack: Modal outermost (nothing may open over it), then the shell
      overlay, then Ctrl-C-quit, then the menu and panes. Exit sits BELOW
@@ -371,13 +309,17 @@ let app ~exit ~(dimensions : Dimensions.t Bonsai.t) (local_ graph)
   let with_exit = exit_on_ctrlc ~exit with_menu in
   let with_term = Term_pane.Component.wrap term with_exit in
   let with_modal =
-    Modal.Component.component ~model:modal_model ~inject:inject_modal with_term
+    Modal.Component.component
+      ~model:modal_model
+      ~inject:inject_modal
+      with_term
+      ~dimensions:screen_dimensions
+      graph
   in
-  let ~view:screen_view, ~handler = with_modal ~dimensions:screen_dimensions graph in
   let view =
-    let%arr screen_view
+    let%arr screen_view = with_modal.Widget.view
+    and hints = with_modal.Widget.hints
     and dimensions
-    and layout_model
     and branch = data.branch
     and notice in
     let branch_info =
@@ -395,9 +337,9 @@ let app ~exit ~(dimensions : Dimensions.t Bonsai.t) (local_ graph)
       ; Status_bar.render
           ~left:(" gitter " ^ branch_info)
           ~notice
-          ~right:(hints ~focused:layout_model.Layout.State.Model.focused ^ " ")
+          ~right:(hints ^ " ")
           ~width:dimensions.width
       ]
   in
-  ~view, ~handler
+  ~view, ~handler:with_modal.Widget.handler
 ;;

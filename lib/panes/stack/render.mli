@@ -12,6 +12,7 @@ type status =
 
 val render
   :  status:status
+  -> rows:State.Row.t list (** the host's shared visible-rows derivation *)
   -> model:State.Model.t
   -> base:string option (** marked "(base)" on its row *)
   -> dimensions:Dimensions.t

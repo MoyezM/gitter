@@ -1,12 +1,13 @@
 open! Core
 
-(** The branch stack, derived from git alone — no Graphite metadata. See
-    stack.ml for the inference: each branch's parent is the branch with
-    the deepest merge-base into its ancestry (computed inside the DAG
-    above the branches' common base, with recent reflog tips standing in
-    for amended parents), which also yields "needs restack" when the
-    parent's current head has left the branch's ancestry. Pure and
-    total. *)
+(** The branch stack, derived from git alone — no Graphite metadata.
+    Each branch's parent is the branch with the deepest merge-base into
+    its ancestry (computed inside the DAG above the branches' common
+    base, with recent reflog tips standing in for amended parents),
+    which also yields "needs restack" when the parent's current head has
+    left the branch's ancestry — see the inference note in
+    branch_stack.ml. [parse] is pure and total; [fetch] runs the git
+    pipeline that feeds it. *)
 
 module Branch : sig
   type t =
@@ -41,3 +42,9 @@ val parse
 (** The current branch's parent branch in a parsed stack — the default
     base for the committed-vs-base view. None when absent or on trunk. *)
 val parent_of_current : Branch.t list -> string option
+
+(** The stack from the live repo: recency-sorted heads, per-branch
+    merge-bases as the DAG floor, a bounded rev-list --parents walk and
+    recent reflog tips — piped into [parse]. [] when the repo has no
+    branches. *)
+val fetch : unit -> Branch.t list Or_error.t Async.Deferred.t

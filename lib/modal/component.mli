@@ -24,5 +24,7 @@ val controls : inject:(State.Action.t -> unit Effect.t) Bonsai.t -> Controls.t B
 val component
   :  model:State.Model.t Bonsai.t
   -> inject:(State.Action.t -> unit Effect.t) Bonsai.t
-  -> Widget.t
-  -> Widget.t
+  -> Widget.screen
+  -> dimensions:Dimensions.t Bonsai.t
+  -> local_ Bonsai.graph
+  -> Widget.screen

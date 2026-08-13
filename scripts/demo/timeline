@@ -1,0 +1,35 @@
+#!/usr/bin/env bash
+# The "when did each beat happen" output — step 1 of captioning.
+#
+#   scripts/demo/timeline <gif> [interval_seconds] [out.png]
+#
+# vhs writes an ON-CHANGE frame dump (no timestamps) and a fixed-rate GIF,
+# so neither alone tells you the wall-clock time of a beat. This renders a
+# labeled contact sheet straight from the GIF — one frame every
+# [interval] seconds, stamped with its timestamp — which IS the timing
+# ground truth (the GIF is what ships). Read the beat you care about off
+# the sheet, then set its time in scripts/demo/<tape>-captions.ass
+# (scripts/demo/hero-captions.ass for the hero tape) and run
+# scripts/demo/caption.
+#
+# Deliberately not auto-derived from the frame dump: the dump de-dupes
+# holds and the GIF palette-quantizes a few states, so a dump frame index
+# does not map cleanly to a GIF timestamp. The eye on a labeled sheet is
+# both simpler and correct.
+set -euo pipefail
+
+gif="${1:?usage: scripts/demo/timeline <gif> [interval_seconds] [out.png]}"
+interval="${2:-2.5}"
+out="${3:-/tmp/hero_timeline.png}"
+[ -f "$gif" ] || { echo "no such gif: $gif" >&2; exit 1; }
+command -v ffmpeg >/dev/null || { echo "ffmpeg not found (enter the dev shell)" >&2; exit 1; }
+
+font="$(fc-list 2>/dev/null | grep -m1 -iE 'DejaVuSans.ttf|LiberationSans-Regular.ttf' | cut -d: -f1 || true)"
+[ -n "$font" ] || { echo "no usable ttf found for labels" >&2; exit 1; }
+
+# One frame per [interval]s, scaled down, each stamped with trunc(n*interval).
+ffmpeg -y -hide_banner -v error -i "$gif" \
+  -vf "fps=1/${interval},scale=460:-1,drawtext=fontfile='${font}':text='%{expr\:trunc(n*${interval})}s':x=6:y=6:fontsize=22:fontcolor=yellow:box=1:boxcolor=black@0.7:boxborderw=4,tile=5x4" \
+  -frames:v 1 "$out"
+
+printf 'timeline: %s  (one frame / %ss)\n' "$out" "$interval"

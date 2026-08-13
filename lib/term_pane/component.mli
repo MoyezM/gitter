@@ -14,6 +14,9 @@ type t
 
 val create
   :  dimensions:Dimensions.t Bonsai.t
+  -> on_show:unit Effect.t Bonsai.t
+       (** fired as the overlay takes the screen — the app implicitly
+           commits any active search prompt (L3) *)
   -> on_hide:unit Effect.t Bonsai.t
   -> on_ctrl_c:unit Effect.t Bonsai.t
   -> local_ Bonsai.graph
@@ -25,6 +28,6 @@ end
 
 val controls : t -> Controls.t Bonsai.t
 
-(** Wrap the app: overlays the terminal and consumes events while
+(** Wrap the screen: overlays the terminal and consumes events while
     visible; Ctrl-T is intercepted in both states. *)
-val wrap : t -> Widget.t -> Widget.t
+val wrap : t -> Widget.screen -> Widget.screen

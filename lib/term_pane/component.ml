@@ -30,6 +30,7 @@ type t =
   ; client : Terminal.Session.t option ref
   ; dimensions : Dimensions.t Bonsai.t
   ; cwd : string
+  ; on_show : unit Effect.t Bonsai.t
   ; on_hide : unit Effect.t Bonsai.t
   ; on_ctrl_c : unit Effect.t Bonsai.t
   }
@@ -40,7 +41,7 @@ let inner (dimensions : Dimensions.t) =
   , Int.max 10 (dimensions.width - (2 * margin_x) - 2) )
 ;;
 
-let create ~(dimensions : Dimensions.t Bonsai.t) ~on_hide ~on_ctrl_c (local_ graph) =
+let create ~(dimensions : Dimensions.t Bonsai.t) ~on_show ~on_hide ~on_ctrl_c (local_ graph) =
   let visible, set_visible = Bonsai.state false graph in
   let generation_var = Bonsai.Expert.Var.create 0 in
   let client = ref None in
@@ -64,6 +65,7 @@ let create ~(dimensions : Dimensions.t Bonsai.t) ~on_hide ~on_ctrl_c (local_ gra
     ; client
     ; dimensions
     ; cwd
+    ; on_show
     ; on_hide
     ; on_ctrl_c
     }
@@ -98,6 +100,7 @@ let controls t =
   (* No generation dep: all session reads happen at effect time. *)
   let%arr visible = t.visible
   and set_visible = t.set_visible
+  and on_show = t.on_show
   and on_hide = t.on_hide
   and dimensions = t.dimensions in
   let bump () = Bonsai.Expert.Var.update t.generation_var ~f:(fun g -> g + 1) in
@@ -124,16 +127,16 @@ let controls t =
                         bump ();
                         Wake.wake ())));
            bump ())
-         |> fun spawn -> Effect.Many [ spawn; set_visible true ])
+         (* [on_show] first: taking the screen is a focus-stealing action
+            — an active search prompt implicitly commits (L3). *)
+         |> fun spawn -> Effect.Many [ on_show; spawn; set_visible true ])
   }
 ;;
 
-let wrap t (base : Widget.t) : Widget.t =
-  fun ~dimensions (local_ graph) ->
-  let ~view:base_view, ~handler:base_handler = base ~dimensions graph in
+let wrap t (base : Widget.screen) : Widget.screen =
   let toggle = controls t in
   let view =
-    let%arr base_view
+    let%arr base_view = base.Widget.view
     and visible = t.visible
     and generation = t.generation in
     ignore (generation : int);
@@ -157,11 +160,11 @@ let wrap t (base : Widget.t) : Widget.t =
       View.zcat [ View.pad ~l:margin_x ~t:margin_y boxed; base_view ])
   in
   let handler =
-    let%arr base_handler
+    let%arr base_handler = base.Widget.handler
     and visible = t.visible
     and { Controls.toggle } = toggle
     and on_ctrl_c = t.on_ctrl_c
-    and dimensions in
+    and dimensions = t.dimensions in
     fun (event : Event.t) ->
       let forward event =
         match !(t.client) with
@@ -182,17 +185,12 @@ let wrap t (base : Widget.t) : Widget.t =
         | Some _ | None -> Effect.Ignore
       in
       match visible, event with
-      | _, Key_press { key = ASCII ('t' | 'T'); mods = [ Ctrl ] } -> toggle
+      | _, event when Chord.ctrl 't' event -> toggle
       | false, event -> base_handler event
       (* Ctrl-C while visible: SIGINT for the shell, never quit — plus a
-         hint at the way out. notty reports Ctrl-C as UPPERCASE 'C'
-         (sometimes a Uchar); match every form. *)
-      | true, (Key_press { key = ASCII ('C' | 'c'); mods = [ Ctrl ] } as event) ->
-        Effect.Many [ forward event; on_ctrl_c ]
-      | true, (Key_press { key = Uchar u; mods = [ Ctrl ] } as event)
-        when Uchar.equal (Uchar.of_char 'C') u || Uchar.equal (Uchar.of_char 'c') u ->
-        Effect.Many [ forward event; on_ctrl_c ]
+         hint at the way out. *)
+      | true, event when Chord.ctrl 'c' event -> Effect.Many [ forward event; on_ctrl_c ]
       | true, event -> forward event
   in
-  ~view, ~handler
+  { base with Widget.view; handler }
 ;;

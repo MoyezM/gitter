@@ -1,0 +1,47 @@
+#!/usr/bin/env bash
+# Burn caption subtitles onto the demo GIF — step 2 of captioning.
+#
+#   scripts/demo/caption <clean-gif> [captions.ass] [out.gif]
+#     clean-gif     a BARE recording (record --no-captions) — not an
+#                   already-captioned gif, or the text double-burns
+#     captions.ass  ASS subtitle track (default: scripts/demo/hero-captions.ass)
+#     out.gif       output (default: docs/demo/hero.gif — the shipped asset)
+#
+# Normally you don't call this directly: `record` runs it as its last
+# step. Reach for it standalone only to re-burn after editing the .ass.
+#
+# Timing lives in captions.ass, set by eye against scripts/demo/timeline
+# (which stamps each beat with its real timestamp). Edit that file to
+# retime or reword — the styling (bold, outline, bottom-center, fade) is
+# in its [V4+ Styles] block.
+#
+# Two-pass palette: a naive `-vf subtitles` re-encode of a GIF discards the
+# optimized palette and balloons ~3 MB to ~30 MB. palettegen/paletteuse
+# keeps both quality and size.
+set -euo pipefail
+
+root="$(cd "$(dirname "$0")/../.." && pwd)"
+gif="${1:?usage: caption <clean-gif> [captions.ass] [out.gif] — pass a bare recording (record --no-captions)}"
+ass="${2:-$root/scripts/demo/hero-captions.ass}"
+out="${3:-$root/docs/demo/hero.gif}"
+
+for f in "$gif" "$ass"; do [ -f "$f" ] || { echo "no such file: $f" >&2; exit 1; }; done
+command -v ffmpeg >/dev/null || { echo "ffmpeg not found (enter the dev shell)" >&2; exit 1; }
+
+# A temp DIRECTORY, not a file: `mktemp -t x.png` reserves `x`, not
+# `x.png`, so the reserved file would leak and ffmpeg would write an
+# unreserved path. The palette lives inside; the trap clears both.
+tmpdir="$(mktemp -d -t caption.XXXXXX)"
+trap 'rm -rf "$tmpdir"' EXIT
+pal="$tmpdir/palette.png"
+
+# escape the ass path for ffmpeg's filtergraph (commas/colons)
+esc="$(printf '%s' "$ass" | sed -e 's/\\/\\\\/g' -e "s/'/\\\\'/g" -e 's/:/\\:/g')"
+
+ffmpeg -y -hide_banner -v error -i "$gif" \
+  -vf "subtitles='${esc}',palettegen=stats_mode=diff" "$pal"
+ffmpeg -y -hide_banner -v error -i "$gif" -i "$pal" \
+  -lavfi "subtitles='${esc}' [x];[x][1:v]paletteuse=dither=bayer:bayer_scale=3" "$out"
+
+bytes="$(wc -c < "$out" | tr -d ' ')"
+printf 'captioned: %s (%s MB)\n' "$out" "$(echo "scale=1; $bytes/1048576" | bc | sed 's/^\./0./')"

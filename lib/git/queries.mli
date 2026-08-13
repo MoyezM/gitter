@@ -11,30 +11,21 @@ val status
   :  unit
   -> (string * Status.Entry.t list * Status.Branch.t option) Or_error.t Deferred.t
 
-(** The file's content at HEAD — the base of a staged diff. Errors for
-    files new since HEAD. *)
-val file_at_head : string -> string Or_error.t Deferred.t
-
-(** The file's content in the index (stage 0) — the base of an unstaged
-    diff, the result side of a staged one. Errors for untracked files. *)
-val file_in_index : string -> string Or_error.t Deferred.t
-
-(** The unstaged change: worktree vs index. Untracked files render as
-    whole-file-added; a tracked-but-unchanged file (or a directory)
-    yields []. *)
-val diff_unstaged : string -> Diff.File.t list Or_error.t Deferred.t
-
-(** The staged change: index vs HEAD. *)
-val diff_staged : string -> Diff.File.t list Or_error.t Deferred.t
+(** The three text inputs of a file diff view: the parsed diff plus the
+    (old, new) content pair, per side — the pairing law lives here.
+    Unstaged diffs worktree vs index; Staged diffs index vs HEAD;
+    Committed diffs merge-base-vs-[base] vs HEAD. A side the file doesn't
+    have (untracked, deleted, new since HEAD) reads as ""; untracked
+    files render as whole-file-added. The three reads run concurrently. *)
+val diff_with_contents
+  :  [ `Staged | `Unstaged | `Committed of string ]
+  -> path:string
+  -> (Diff.File.t list * string * string) Or_error.t Deferred.t
 
 (** Raw for-each-ref over local heads — the poller's cheap change
-    signature for ref moves ("error:..." on failure, still comparable). *)
+    signature for ref moves ("error:..." on failure, still comparable).
+    Only the probe; the stack itself comes from [Branch_stack.fetch]. *)
 val refs_signature : unit -> string Deferred.t
-
-(** The branch stack derived from git alone (heads + DAG above the common
-    base + recent reflog tips) — see [Branch_stack]. [] when the repo has no
-    branches. *)
-val stack : unit -> Branch_stack.Branch.t list Or_error.t Deferred.t
 
 (** Per-file (added, removed) line counts, (staged, unstaged) — from
     numstat; binary files skipped, untracked files not counted. *)
@@ -52,8 +43,3 @@ val committed
        Or_error.t
        Deferred.t
 
-(** The merge-base blob of [path] — the base side of a committed diff. *)
-val file_at_base : base:string -> string -> string Or_error.t Deferred.t
-
-(** The committed change of [path] vs the merge-base with [base]. *)
-val diff_committed : base:string -> string -> Diff.File.t list Or_error.t Deferred.t

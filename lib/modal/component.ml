@@ -32,18 +32,23 @@ let controls ~inject =
   }
 ;;
 
-let component ~model ~inject (base : Widget.t) : Widget.t =
-  fun ~dimensions (local_ graph) ->
-  let ~view:base_view, ~handler:base_handler = base ~dimensions graph in
+let component ~model ~inject (base : Widget.screen) ~dimensions (local_ graph)
+  : Widget.screen
+  =
   let peek_model = Bonsai.peek model graph in
   let view =
-    let%arr base_view and model and dimensions in
+    let%arr base_view = base.Widget.view
+    and model
+    and dimensions in
     match (model : State.Model.t) with
     | Closed -> base_view
     | open_modal -> View.zcat [ Render.render open_modal ~dimensions; base_view ]
   in
   let handler =
-    let%arr base_handler and model and inject and peek_model in
+    let%arr base_handler = base.Widget.handler
+    and model
+    and inject
+    and peek_model in
     (* Confirm/submit read the model AT EFFECT TIME (peek): the typed text
        must be the accumulated current state, not this frame's snapshot. *)
     let finish =
@@ -75,5 +80,5 @@ let component ~model ~inject (base : Widget.t) : Widget.t =
          | Key_press { key = ASCII c; mods = [] } -> inject (State.Action.Append c)
          | Key_press _ | Mouse _ | Paste _ -> Effect.Ignore)
   in
-  ~view, ~handler
+  { base with Widget.view; handler }
 ;;

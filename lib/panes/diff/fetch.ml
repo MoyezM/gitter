@@ -8,6 +8,10 @@ type payload =
        binary or mode-only one; staging reads Source.hunks instead *)
   ; old_hl : Highlight.t
   ; new_hl : Highlight.t
+  ; doc_id : int
+    (* stable across the two phases of one load, distinct per load — the
+       value form of "same document, highlights swapped in" vs "document
+       replaced"; the component re-anchors its cursor when it changes *)
   }
 
 type side =
@@ -20,65 +24,25 @@ type side =
 type key = string * side [@@deriving equal]
 type result = (key * payload Or_error.t) option
 
-type t = { generation : int ref }
+type t = Latest.t
 
-let create () = { generation = ref 0 }
+let create () = Latest.create ()
 
-(* Phase one of a fetch: the diff and both blob contents — no highlighting.
-   The sides differ per section, VSCode-style: the Changes pane diffs the
-   worktree against the INDEX (relative to what's staged), the Staged pane
-   diffs the index against HEAD. The three reads are independent; start
-   them all before binding (benchmarked at ~20-40ms each — serializing
-   them tripled the latency floor of every fetch). *)
-let fetch_text ((path, side) : key) =
-  let open Async in
-  let or_empty d =
-    d
-    >>| function
-    | Ok c -> c
-    | Error (_ : Error.t) -> "" (* that side doesn't exist for this file *)
-  in
-  let worktree =
-    Monitor.try_with (fun () -> Reader.file_contents path)
-    >>| function
-    | Ok c -> c
-    | Error _ -> "" (* deleted file *)
-  in
-  let diff, old_content, new_content =
-    match side with
-    | `Unstaged ->
-      Git.Queries.diff_unstaged path, or_empty (Git.Queries.file_in_index path), worktree
-    | `Staged ->
-      ( Git.Queries.diff_staged path
-      , or_empty (Git.Queries.file_at_head path)
-      , or_empty (Git.Queries.file_in_index path) )
-    | `Committed base ->
-      ( Git.Queries.diff_committed ~base path
-      , or_empty (Git.Queries.file_at_base ~base path)
-      , or_empty (Git.Queries.file_at_head path) )
-  in
-  let%bind diff in
-  let%bind old_content in
-  let%bind new_content in
-  return (Or_error.map diff ~f:(fun files -> files, old_content, new_content))
-;;
+(* Phase one of a fetch: the diff and both blob contents — no
+   highlighting. Which git object each side reads per section is
+   [Git.Queries.diff_with_contents]'s law. *)
+let fetch_text ((path, side) : key) = Git.Queries.diff_with_contents side ~path
 
-(* The two-phase load protocol. Every write (and the start of every phase)
-   is guarded by a per-fetch generation read at WRITE time: a superseded
-   fetch must not write — a slow fetch for a de-selected (or quickly
-   re-selected) file landing last would wedge or stale the pane — and stops
-   early, skipping highlight parses for files no longer on screen. *)
+(* The two-phase load protocol: one [Latest] token per load, every write
+   (and the start of every phase) guarded by [when_current] — a
+   superseded fetch must not write (a slow fetch for a de-selected, or
+   quickly re-selected, file landing last would wedge or stale the pane)
+   and stops early, skipping highlight parses for files no longer on
+   screen. The token doubles as the payload's [doc_id]. *)
 let load t ~key ~set =
   let path, _side = key in
-  let%bind.Effect mine =
-    Effect.of_thunk (fun () ->
-      incr t.generation;
-      !(t.generation))
-  in
-  let when_current eff =
-    let%bind.Effect current = Effect.of_thunk (fun () -> !(t.generation)) in
-    if current = mine then eff else Effect.Ignore
-  in
+  let%bind.Effect mine = Latest.start t in
+  let when_current eff = Latest.when_current t mine eff in
   let%bind.Effect fetched = Effect.of_deferred_thunk (fun () -> fetch_text key) in
   match fetched with
   | Error e -> when_current (set (Some (key, Error e)))
@@ -101,9 +65,7 @@ let load t ~key ~set =
          source
        in
        let%bind.Effect source =
-         Effect.of_deferred_thunk (fun () ->
-           try Cpu.in_domain build with
-           | _ -> Async.return (build ()))
+         Effect.of_deferred_thunk (fun () -> Cpu.in_domain ~fallback:build build)
        in
        (* Phase one: diff text renders immediately, plain. *)
        let%bind.Effect () =
@@ -112,7 +74,12 @@ let load t ~key ~set =
               (Some
                  ( key
                  , Ok
-                     { source; files; old_hl = Highlight.empty; new_hl = Highlight.empty } )))
+                     { source
+                     ; files
+                     ; old_hl = Highlight.empty
+                     ; new_hl = Highlight.empty
+                     ; doc_id = mine
+                     } )))
        in
        (* Phase two: highlight sessions parse in their own domains and swap
           in when ready — frames never wait on a parse. *)
@@ -122,10 +89,10 @@ let load t ~key ~set =
              (Highlight.create ~path old_content)
              (Highlight.create ~path new_content))
        in
-       when_current (set (Some (key, Ok { source; files; old_hl; new_hl }))))
+       when_current (set (Some (key, Ok { source; files; old_hl; new_hl; doc_id = mine }))))
 ;;
 
 let clear t ~set =
-  let%bind.Effect () = Effect.of_thunk (fun () -> incr t.generation) in
+  let%bind.Effect () = Latest.invalidate t in
   set None
 ;;

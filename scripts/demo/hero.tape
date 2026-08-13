@@ -54,20 +54,29 @@ Type "j"
 Wait+Screen /is_empty/
 Sleep 1120ms
 
-# Over to Changes and down to the Python file — a second grammar, and the
-# file we are about to stage.
+# Over to Changes and find the Python file by SEARCH. `/` opens a prompt in
+# the pane's OWN bottom border; the tree narrows to fuzzy matches as you
+# type, first match selected live — so the diff pane fills with rollup.py
+# without a single arrow key.
 Tab
 Sleep 300ms
-Type "j"
-Type "j"
-Type "j"
-Type "j"
+Type "/"
+Sleep 450ms
+Type "roll"
 Wait+Screen /MAX_BUCKETS/
-Sleep 1260ms
+Sleep 1300ms
 
-# Stage it: the row leaves Changes and lands in Staged.
+# Enter accepts the match into a dimmed register (kept in the border for
+# n/N recall); the tree un-narrows on the accepted file.
+Enter
+Sleep 940ms
+
+# Stage it: the row leaves Changes and lands in Staged. Esc clears the
+# now-matchless register.
 Type "s"
-Sleep 1540ms
+Sleep 1360ms
+Escape
+Sleep 520ms
 
 # Back to the top of Changes (k clamps there) and onto the Rust file, which
 # still has an unstaged hunk of its own.
@@ -133,23 +142,55 @@ Type "j"
 Wait+Screen /quantile/
 Sleep 1540ms
 
+# Onto ingest.py, whose committed diff ELIDES the unchanged lines between
+# hunks into collapsible rules — the "N hidden" bars with the little
+# up/down chevrons. (Committed: window.rs -> ingest.py.)
+Type "j"
+Type "j"
+Wait+Screen /2 hidden/
+Sleep 940ms
+
 # Zoom is applied to the FOCUSED pane, so step onto the diff first
 # (Committed -> Stack -> Diff) before zooming, or the file list zooms
 # instead of the code.
 Tab
 Tab
-Sleep 400ms
-
-# Zoom the diff to full screen and scroll the hunk: this is what the
-# vendored tree-sitter grammars are for.
+Sleep 300ms
 Space
-Sleep 420ms
+Sleep 360ms
 Type "w"
-Sleep 420ms
+Sleep 360ms
 Type "z"
-Sleep 1120ms
-Type "jjjjjjjjjjjjjjjjjjjj"
-Sleep 1260ms
+Sleep 1000ms
+
+# Drop the cursor past the class header, then K opens the elided run above
+# it — the dataclass body (source / name / value / at) fills straight into
+# the gutter, real line numbers and all (J opens below, X folds it back).
+# No re-running git, no losing your place.
+Type "jjjjjjjjjjj"
+Sleep 500ms
+Type "K"
+Wait+Screen /value: float/
+Sleep 1300ms
+
+# Search runs over the WHOLE interleaved file — even lines hidden inside
+# collapsed context, and removed lines git no longer ships. The border
+# counts total matches and how many are hidden. Enter commits the query to
+# a dimmed register; n / N walk the matches, revealing as they land.
+Type "/"
+Sleep 300ms
+Type "Event"
+Sleep 1000ms
+Enter
+Sleep 820ms
+Type "n"
+Sleep 900ms
+Type "n"
+Sleep 940ms
+Escape
+Sleep 600ms
+
+# Unzoom back to the review layout.
 Space
 Sleep 300ms
 Type "w"

@@ -31,36 +31,20 @@ module Row = struct
 end
 
 module Model = struct
-  type t =
-    { listing : Listing.Model.t
-    ; overrides : bool String.Map.t (* row key -> collapsed, user-toggled *)
-    }
+  (* fold = the per-key collapse overrides (row key -> collapsed). *)
+  type t = bool String.Map.t Search.Tree_search.Model.t
 
-  let initial = { listing = Listing.Model.initial; overrides = String.Map.empty }
+  let initial : t = Search.Tree_search.Model.initial String.Map.empty
 end
 
 module Action = struct
-  (* Height rides the actions: the state machine has no dimensions (see
-     the files pane precedent). *)
+  (* The navigation vocabulary is [Tree_listing]'s; only what is
+     stack-specific stays here. *)
   type t =
-    | Move of
-        { dir : [ `Up | `Down ]
-        ; height : int
-        }
-    | Activate of
-        { row : int (* absolute visible-row index *)
-        ; height : int
-        }
-    | Fold of { height : int } (* h: collapse, or jump to the parent *)
-    | Unfold of { height : int } (* l *)
-    | Wheel of
-        { dir : int
-        ; height : int
-        }
-    | Rows_changed (* the derived rows changed: repair the selection *)
+    | Nav of Tree_listing.Action.t
     | Enter of { height : int }
       (* set the selected branch as the diff base (resolved at APPLY time
-         by the host wrapper — burst-safe); on a group row: toggle it *)
+         by the host wrapper - burst-safe); on a group row: toggle it *)
   [@@deriving sexp_of]
 end
 
@@ -140,7 +124,9 @@ let rec branch_count node =
 
 (* ---- the visible rows -------------------------------------------------- *)
 
-let visible ~(branches : Git.Branch_stack.Branch.t list) ~overrides : Row.t list =
+let visible' ~(branches : Git.Branch_stack.Branch.t list) ~overrides ~bypass_folds
+  : Row.t list
+  =
   let roots, _leftover = forest ~depth:0 branches in
   let collapsed_of node ~depth ~on_chain =
     let key, default =
@@ -162,7 +148,7 @@ let visible ~(branches : Git.Branch_stack.Branch.t list) ~overrides : Row.t list
     in
     let on_chain = in_subtree || contains_current node in
     let children = children_of node in
-    let collapsed = collapsed_of node ~depth ~on_chain in
+    let collapsed = (not bypass_folds) && collapsed_of node ~depth ~on_chain in
     let has_children = not (List.is_empty children) in
     let hidden = if collapsed && has_children then branch_count node - (match node with Branch_node _ -> 1 | Group_node _ -> 0) else 0 in
     let row =
@@ -195,65 +181,102 @@ let visible ~(branches : Git.Branch_stack.Branch.t list) ~overrides : Row.t list
   List.rev (List.fold roots ~init:[] ~f:(fun acc r -> walk r ~depth:0 ~in_subtree:false acc))
 ;;
 
+let visible ~branches ~overrides = visible' ~branches ~overrides ~bypass_folds:false
+
+(* Every row with every fold open — the space search filters (T2) and
+   [n]/[N] jump over (T7). *)
+let all_rows ~branches =
+  visible' ~branches ~overrides:String.Map.empty ~bypass_folds:true
+;;
+
 let row_key (r : Row.t) = r.key
 let selection_key (model : Model.t) = model.listing.selection
 let scroll (model : Model.t) = model.listing.scroll
 let index_of rows selection = Listing.index_of ~key:row_key rows selection
 
-let rec apply_action ~branches (model : Model.t) (action : Action.t) =
-  let rows overrides = visible ~branches ~overrides in
-  let current = rows model.overrides in
-  if List.is_empty current
-  then { model with Model.listing = Listing.empty }
-  else (
-    let index = index_of current model.listing.selection in
-    (* Select by index under (possibly changed) fold overrides. *)
-    let select ?height ~overrides index =
-      { Model.overrides
-      ; listing = Listing.select ~key:row_key (rows overrides) ?height ~index model.listing
-      }
-    in
-    match action with
-    | Action.Wheel { dir; height } ->
-      { model with
-        Model.listing =
-          Listing.wheel model.listing ~total:(List.length current) ~height ~dir
-      }
-    | Move { dir = `Up; height } -> select ~height ~overrides:model.overrides (index - 1)
-    | Move { dir = `Down; height } -> select ~height ~overrides:model.overrides (index + 1)
-    | Activate { row; height } ->
-      let row = Int.clamp_exn row ~min:0 ~max:(List.length current - 1) in
-      let r = List.nth_exn current row in
-      if r.has_children
-      then (
-        let overrides = Map.set model.overrides ~key:r.key ~data:(not r.collapsed) in
-        select ~height ~overrides (index_of (rows overrides) (Some r.key)))
-      else select ~height ~overrides:model.overrides row
-    | Fold { height } ->
-      let r = List.nth_exn current index in
-      if r.has_children && not r.collapsed
-      then (
-        let overrides = Map.set model.overrides ~key:r.key ~data:true in
-        select ~height ~overrides (index_of (rows overrides) (Some r.key)))
-      else (
-        match Listing.parent_index ~depth:(fun (r : Row.t) -> r.depth) current index with
-        | Some i -> select ~height ~overrides:model.overrides i
-        | None -> model)
-    | Unfold { height } ->
-      let r = List.nth_exn current index in
-      if r.has_children && r.collapsed
-      then (
-        let overrides = Map.set model.overrides ~key:r.key ~data:false in
-        select ~height ~overrides (index_of (rows overrides) (Some r.key)))
-      else model
-    | Rows_changed ->
-      { model with Model.listing = Listing.rows_changed ~key:row_key current model.listing }
-    | Enter { height } ->
-      (* Group rows fold-toggle; branch resolution happens in the host
-         wrapper, which re-dispatches here for the group case. *)
-      let r = List.nth_exn current index in
-      if r.has_children && (match r.kind with Row.Group _ -> true | Branch _ -> false)
-      then
-        apply_action ~branches model (Activate { row = index; height })
-      else model)
+(* The fold keys above [index] - what revealing a row must unfold.
+   Iterated [Listing.parent_index], so ancestry has one owner: the same
+   walk the fold-jump uses. *)
+let ancestor_keys rows index =
+  let rec up index acc =
+    match Listing.parent_index ~depth:(fun (r : Row.t) -> r.depth) rows index with
+    | None -> acc
+    | Some i -> up i ((List.nth_exn rows i).Row.key :: acc)
+  in
+  up index []
 ;;
+
+(* The row facts and the reveal that make this pane searchable: only
+   BRANCH rows are match candidates, on their names (T1); groups are
+   ancestor-chain carriers; every row can parent (branches parent
+   branches); revealing unfolds the ancestor chain via overrides. *)
+let pane ~branches : (Row.t, bool String.Map.t) Search.Tree_search.pane =
+  { rows = (fun overrides -> visible ~branches ~overrides)
+  ; all_rows = (fun () -> all_rows ~branches)
+  ; key = row_key
+  ; depth = (fun (r : Row.t) -> r.depth)
+  ; is_parent = (fun (_ : Row.t) -> true)
+  ; candidate =
+      (fun r ->
+        match r.Row.kind with
+        | Row.Branch b -> Some b.name
+        | Group _ -> None)
+  ; reveal =
+      (fun overrides ~key ->
+        let full = all_rows ~branches in
+        match List.findi full ~f:(fun (_ : int) r -> String.equal r.Row.key key) with
+        | None -> overrides
+        | Some (index, _) ->
+          List.fold (ancestor_keys full index) ~init:overrides ~f:(fun acc key ->
+            Map.set acc ~key ~data:false))
+  }
+;;
+
+let displayed_rows ~branches ~overrides ~search =
+  Search.Tree_search.displayed_rows (pane ~branches) ~fold:overrides ~search
+;;
+
+let visible_rows ~branches (model : Model.t) =
+  displayed_rows ~branches ~overrides:model.fold ~search:model.search
+;;
+
+(* What folding means here: rows with children fold via the per-key
+   override map. *)
+let caps ~branches : (Row.t, bool String.Map.t) Tree_listing.caps =
+  { pane = pane ~branches
+  ; fold_state =
+      (fun (r : Row.t) ->
+        if r.has_children then if r.collapsed then `Closed else `Open else `Leaf)
+  ; set_folded = (fun overrides ~key ~folded -> Map.set overrides ~key ~data:folded)
+  }
+;;
+
+(* The pane's own transitions, over already-RESOLVED actions —
+   [Search.Tree_search.apply] owns the mode dispatch and the search
+   lifecycle; [Tree_listing.apply] owns navigation. *)
+let apply_plain ~branches (model : Model.t) (action : Action.t) =
+  match action with
+  | Action.Nav nav -> Tree_listing.apply (caps ~branches) model nav
+  | Enter { height } ->
+    (* Group rows fold-toggle; branch resolution happens in the host
+       wrapper, which schedules set-base for the branch case. *)
+    let current = visible_rows ~branches model in
+    let index = index_of current model.listing.selection in
+    (match List.nth current index with
+     | Some { Row.kind = Group _; has_children = true; _ } ->
+       Tree_listing.apply (caps ~branches) model (Activate { row = index; height })
+     | Some _ | None -> model)
+;;
+
+let apply_action ~branches (model : Model.t) (action : Action.t Search.Action.t) =
+  Search.Tree_search.apply (pane ~branches) ~apply_pane:(apply_plain ~branches) model action
+;;
+
+(* The pane's bottom-border search line, and its counter (exposed for
+   tests). *)
+let match_counts ~branches search = Search.Tree_search.match_counts (pane ~branches) search
+
+let border ~branches search ~width =
+  Search.Tree_search.border (pane ~branches) ~search ~width
+;;
+
